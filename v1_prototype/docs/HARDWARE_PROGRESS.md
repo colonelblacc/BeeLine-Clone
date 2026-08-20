@@ -151,19 +151,29 @@ DEVICE_EVENT_CHAR:   1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6f  (NOTIFY)
 
 ---
 
-### PHASE 8 — Full Navigation UI (Gradual Build)
-- [ ] **8.1** Large distance text (Montserrat Bold 48)
-- [ ] **8.2** Turn arrow icons (↑ ← → ↩)
-- [ ] **8.3** Speed limit circular badge
-- [ ] **8.4** 4 route curve bitmaps (straight/left/right/U-turn)
-- [ ] **8.5** BLE connection status indicator
-- [ ] **8.6** ETA label
+### PHASE 8 — BeeLine Moto II Map Abstraction UI Rendering (Modular `ui.h`/`ui.cpp`)
+*Goal: Render exact Map Abstraction matching `docs/ui_mockups/Map_UI.jpg` on 412×412 round display*
+
+- [ ] **8.1** **Top 60% Map Abstraction Layer**:
+  - Main active route polyline (bold white path showing upcoming turn geometry)
+  - Intersecting side-street paths (subtle dim gray lines)
+  - Rider position pointer icon (`▲` arrowhead at base of active route)
+- [ ] **8.2** **Bottom-Left Manoeuvre & Proximity Panel**:
+  - Dynamic turn direction icon (Right `⤷`, Left `↰`, Straight `↑`, U-Turn `↶`)
+  - Crisp, large proximity distance typography (`300 m` / `1.2 km`)
+- [ ] **8.3** **Bottom-Right Speed Limit Badge**:
+  - Circular badge widget with red ring border (`#FF3B30`), white fill (`#FFFFFF`), and bold black speed numbers (`70` / `50`)
+- [ ] **8.4** **Bottom Progress Arc**:
+  - Curved progress arc widget (`lv_arc`) along lower rim indicating turn proximity / segment completion
+- [ ] **8.5** **BLE Connection Overlay**:
+  - Status indicator icon when phone BLE disconnects or reconnects
 
 ---
 
 ### PHASE 9 — Round-Screen Polish & Visual Alignment
-- [ ] **9.1** Ensure all widgets stay within 412×412 round boundary
-- [ ] **9.2** Verify visual match with `docs/ui_mockups/Map_UI.jpg`
+- [ ] **9.1** Ensure all widgets stay strictly within 412×412 round IPS bezel boundary
+- [ ] **9.2** Verify 1-to-1 visual match against `docs/ui_mockups/Map_UI.jpg`
+
 
 ---
 

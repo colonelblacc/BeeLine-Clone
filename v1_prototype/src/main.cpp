@@ -2,7 +2,6 @@
 #include "Display_SPD2010.h"
 #include "I2C_Driver.h"
 #include "TCA9554PWR.h"
-#include "Touch_SPD2010.h"
 #include "LVGL_Driver.h"
 
 #define PWR_CONTROL_PIN 7
@@ -82,14 +81,6 @@ void set_color_state(ColorState state) {
     lv_obj_invalidate(scr);
 }
 
-static void screen_event_cb(lv_event_t * e) {
-    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-        last_switch = millis();
-        current_state = (ColorState)((current_state + 1) % STATE_COUNT);
-        set_color_state(current_state);
-    }
-}
-
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -117,7 +108,7 @@ void setup() {
 
     // 5. Build UI Objects
     scr = lv_scr_act();
-    lv_obj_add_event_cb(scr, screen_event_cb, LV_EVENT_CLICKED, NULL);
+
 
     // Center Label
     label = lv_label_create(scr);

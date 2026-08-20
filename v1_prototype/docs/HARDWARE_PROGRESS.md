@@ -119,11 +119,12 @@ DEVICE_EVENT_CHAR:   1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6f  (NOTIFY)
 
 ---
 
-### PHASE 4 — LVGL Touch Input (✔ VERIFIED ON PHYSICAL HARDWARE)
-- [x] **4.1** Implement touch read from SPD2010 over I2C (0x53)
-- [x] **4.2** Implement LVGL touch read callback `lvgl_touch_read_cb()`
-- [x] **4.3** Register touch as POINTER input device
-- [x] **4.4** **Verified screen tap cycling color states on physical capacitive touch hardware ✔**
+### PHASE 4 — Touch Input (DETACHED FROM PROJECT BY DESIGN)
+*Note: BeeLine Moto II architecture relies on BLE phone companion & physical buttons. Touch input processing is intentionally detached and disabled in `LVGL_Driver.cpp` to conserve CPU ticks and I2C bus bandwidth.*
+
+- [x] **4.1** Verified SPD2010 touch chip hardware over I2C (0x53)
+- [x] **4.2** **Touch input drivers permanently detached and disabled from LVGL pipeline** ✔
+
 
 
 ---

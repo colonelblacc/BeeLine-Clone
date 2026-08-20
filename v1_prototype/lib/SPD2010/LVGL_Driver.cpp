@@ -40,24 +40,7 @@ void Lvgl_Display_LCD( lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
   LCD_addWindow(area->x1, area->y1, area->x2, area->y2, ( uint16_t *)&color_p->full);
   lv_disp_flush_ready( disp_drv );
 }
-/*Read the touchpad*/
-void Lvgl_Touchpad_Read( lv_indev_drv_t * indev_drv, lv_indev_data_t * data )
-{
-  bool tp_pressed = false;
-  uint16_t tp_x = 0;
-  uint16_t tp_y = 0;
-  uint8_t tp_cnt = 0;
-  tp_pressed = Touch_Get_xy(&tp_x, &tp_y, NULL, &tp_cnt, CONFIG_ESP_LCD_TOUCH_MAX_POINTS);
-  if (tp_pressed && (tp_cnt > 0)) {
-    data->point.x = tp_x;
-    data->point.y = tp_y;
-    data->state = LV_INDEV_STATE_PR;
-    // printf("LVGL : X=%u Y=%u points=%d\r\n",  tp_x , tp_y,tp_cnt);
-  }else {
-    data->state = LV_INDEV_STATE_REL;
-  }
 
-}
 void example_increase_lvgl_tick(void *arg)
 {
     /* Tell LVGL how many milliseconds has elapsed */
@@ -80,14 +63,8 @@ void Lvgl_Init(void)
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register( &disp_drv );
 
-  /*Initialize the (dummy) input device driver*/
-  static lv_indev_drv_t indev_drv;
-  lv_indev_drv_init( &indev_drv );
-  indev_drv.type = LV_INDEV_TYPE_POINTER;
-  indev_drv.read_cb = Lvgl_Touchpad_Read;
-  lv_indev_drv_register( &indev_drv );
-
   const esp_timer_create_args_t lvgl_tick_timer_args = {
+
 
     .callback = &example_increase_lvgl_tick,
     .name = "lvgl_tick"

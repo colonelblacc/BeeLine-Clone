@@ -38,12 +38,13 @@ export function NavigationScreen() {
   useEffect(() => {
     if (!route && !isRecording) return;
     
+    let lastWriteTime = 0;
+
     const unsub = watchLocation((loc) => {
       useNavStore.getState().setUserLocation(loc);
       
       if (isRecording) {
         setRecordSpeed(loc.coords?.speed ?? 0);
-        // We could write dummy nav state to the device here if we wanted the device to show free roam stats!
       } else if (route) {
         const { stepIndex, distanceToNextM: dist } = getNavigationProgress(loc, route.steps, currentStepIndex);
         setNavProgress(stepIndex, dist);
@@ -53,7 +54,9 @@ export function NavigationScreen() {
         const etaMinutes = Math.max(1, Math.round((remainingDistM / 1000 / 30) * 60));
         setEta(etaMinutes);
         
-        if (bleConnected) {
+        const now = Date.now();
+        if (bleConnected && (now - lastWriteTime >= 500)) {
+          lastWriteTime = now;
           const totalDist = route.totalDistanceM || 1;
           const progressPct = Math.min(100, Math.max(0, Math.round(((totalDist - remainingDistM) / totalDist) * 100)));
           const step = route.steps[stepIndex];

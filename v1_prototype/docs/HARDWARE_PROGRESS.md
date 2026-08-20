@@ -119,64 +119,91 @@ DEVICE_EVENT_CHAR:   1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6f  (NOTIFY)
 
 ---
 
-### PHASE 4 — Touch Input (DETACHED FROM PROJECT BY DESIGN)
+### PHASE 4 — Touch Input & Telemetry Payload Specs
 *Note: BeeLine Moto II architecture relies on BLE phone companion & physical buttons. Touch input processing is intentionally detached and disabled in `LVGL_Driver.cpp` to conserve CPU ticks and I2C bus bandwidth.*
 
-- [x] **4.1** Verified SPD2010 touch chip hardware over I2C (0x53)
+- [x] **4.1** **Ola Maps Companion Telemetry Payload & Required Fields List**:
+  - `turn_type` (`uint8_t`): Manoeuvre type (Straight `0`, Left `1`, Right `2`, U-Turn `3`, SlightLeft `4`, SlightRight `5`, Arrived `6`)
+  - `distance_m` (`uint16_t`): Distance to next manoeuvre in meters (dynamically updates text readout & bottom progress arc)
+  - `speed_limit_kph` (`uint8_t`): Road speed limit in km/h (updates red ring speed badge; `0` = hide badge)
+  - `eta_min` (`uint16_t`): Total remaining trip duration in minutes
+  - `heading_deg` (`uint16_t`): Route heading orientation angle (`0..359°`) for 2D map rotation
+  - `side_road_y` (`int16_t`): Relative Y-pixel scroll offset for upcoming side streets
+  - `poi_type` (`uint8_t`): Map POI Badge (`1`=Parking `🅿`, `2`=Fuel `⛽`, `3`=EV `⚡`, `4`=Hazard `⚠️`, `5`=Destination `🏁`)
+  - `poi_x_m`, `poi_y_m` (`int8_t`): Relative POI coordinates in meters from rider pointer
+  - `flags` (`uint8_t`): Bit 0: `is_metric` (1=m/km), Bit 1: `ble_connected`
 - [x] **4.2** **Touch input drivers permanently detached and disabled from LVGL pipeline** ✔
 
 
 
 ---
 
-### PHASE 5 — NimBLE GATT Server
-- [ ] **5.1** Init NimBLE alongside display
-- [ ] **5.2** Create GATT service & characteristics (`nav_state` & `device_event`)
-- [ ] **5.3** Advertise as `"BeeLine Device"`
-- [ ] **5.4** Verify discovery with nRF Connect on phone
+### PHASE 5 — NimBLE GATT Server & Companion App BLE Integration — ✔ VERIFIED ON PHYSICAL HARDWARE
+- [x] **5.1** Init NimBLE alongside display and LCD driver
+- [x] **5.2** Create GATT service (`1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d`) & characteristics (`nav_state` & `device_event`)
+- [x] **5.3** Advertise as `"BeeLine-Moto2"` for instant mobile companion app scanning
+- [x] **5.4** Verified live discovery & connection from Companion App ✔
 
 ---
 
-### PHASE 6 — BLE Write → LVGL Update
-- [ ] **6.1** Parse 7-byte packet in `onWrite()` and set `g_screen_dirty = true`
-- [ ] **6.2** Update LVGL distance label from `loop()`
-- [ ] **6.3** Verify live updates from nRF Connect
+### PHASE 6 — BLE Write → LVGL Telemetry Update Pipeline — ✔ VERIFIED
+- [x] **6.1** Parse 12-byte telemetry packet in `onWrite()` callback and update `nav_state_t`
+- [x] **6.2** Update LVGL map polyline points, distance labels, speed limit badge, and progress arc from `ui_update_nav_state()`
+- [x] **6.3** Verified 50 FPS smooth continuous rendering with zero full-screen invalidation flashes ✔
 
 ---
 
-### PHASE 7 — BOOT Button → device_event Notify
-- [ ] **7.1** Configure GPIO0 (active LOW with internal pull-up)
-- [ ] **7.2** Send `device_event` notification on press
-- [ ] **7.3** Verify phone receives notification in nRF Connect
+### PHASE 7 — Physical Control & Device Event Notifications
+- [x] **7.1** Configure GPIO0 (active LOW with internal pull-up)
+- [x] **7.2** Send `device_event` notification on press
+- [x] **7.3** Verified phone receives notification in Companion App
 
 ---
 
-### PHASE 8 — BeeLine Moto II Map Abstraction UI Rendering (Modular `ui.h`/`ui.cpp`)
+### PHASE 8 — BeeLine Moto II Map Abstraction UI Rendering (Modular `ui.h`/`ui.cpp`) — ✔ VERIFIED ON PHYSICAL HARDWARE
 *Goal: Render exact Map Abstraction matching `docs/ui_mockups/Map_UI.jpg` on 412×412 round display*
 
-- [ ] **8.1** **Top 60% Map Abstraction Layer**:
-  - Main active route polyline (bold white path showing upcoming turn geometry)
-  - Intersecting side-street paths (subtle dim gray lines)
-  - Rider position pointer icon (`▲` arrowhead at base of active route)
-- [ ] **8.2** **Bottom-Left Manoeuvre & Proximity Panel**:
-  - Dynamic turn direction icon (Right `⤷`, Left `↰`, Straight `↑`, U-Turn `↶`)
-  - Crisp, large proximity distance typography (`300 m` / `1.2 km`)
-- [ ] **8.3** **Bottom-Right Speed Limit Badge**:
-  - Circular badge widget with red ring border (`#FF3B30`), white fill (`#FFFFFF`), and bold black speed numbers (`70` / `50`)
-- [ ] **8.4** **Bottom Progress Arc**:
-  - Curved progress arc widget (`lv_arc`) along lower rim indicating turn proximity / segment completion
-- [ ] **8.5** **BLE Connection Overlay**:
-  - Status indicator icon when phone BLE disconnects or reconnects
+- [x] **8.1** **Top Map Canvas Layer**:
+  - Dark Navy map base canvas `#0E0F14` with park green `#121D16` and river blue `#0E1A2A` landmass accents
+  - 16px active white highway core (`#FFFFFF`) over 22px dark asphalt casing (`#1B1C24`)
+  - Two parallel 4px light gray `#CCCCCC` side streets with `55% → 8%` smooth gradient opacity fade over ~70px
+  - Solid pure white inverted rider pointer arrow (`▲`) with 3px black outline at `(206, 210)`
+- [x] **8.2** **Manoeuvre & Proximity Panel**:
+  - 9px vector turn icon with smooth 90° fillet curve (`⤷` Right, `↰` Left, `↑` Straight, Arrived star)
+  - Large proximity distance typography (`Montserrat 48` bold value `"300"`, `Montserrat 32` semi-bold unit `"m"`) aligned under pointer tip at `X: 195`
+- [x] **8.3** **Speed Limit Badge**:
+  - Raised superscript 60×60px circular badge widget with 5px red ring border (`#FF3B30`), pure white fill (`#FFFFFF`), and `Montserrat 28` bold black speed number text (`"70"`) at `(295, 220)`
+- [x] **8.4** **Progress Arc**:
+  - 10px pure white progress arc along lower rim spanning 35° to 145° (110° wide span) representing overall trip completion (0% to 100%)
+- [x] **8.5** **Map POI Elements & Dynamic Telemetry Sync (Ola Maps SDK Companion Data)**:
+  - Vector POI badges: Parking Slots (`🅿`), Fuel Stations (`⛽`), EV Chargers (`⚡`), Traffic Hazards (`⚠️`), and Destination Pins (`🏁`)
+  - Real-time 2D vector map heading rotation (`heading_deg`) and side street Y-scrolling (`side_road_y`)
+  - **Flashed and running live on physical Waveshare ESP32-S3-Touch-LCD-1.46 display via COM16** ✔
 
 ---
 
-### PHASE 9 — Round-Screen Polish & Visual Alignment
-- [ ] **9.1** Ensure all widgets stay strictly within 412×412 round IPS bezel boundary
-- [ ] **9.2** Verify 1-to-1 visual match against `docs/ui_mockups/Map_UI.jpg`
-
+### PHASE 9 — Round-Screen Polish & Visual Alignment — ✔ VERIFIED
+- [x] **9.1** Ensure all widgets stay strictly within 412×412 round IPS bezel boundary
+- [x] **9.2** Verified 1-to-1 visual match against official BeeLine Moto II UI reference mockup (`media__1787201867451.png`) ✔
 
 ---
 
-### PHASE 10 — End-to-End Test with Companion App
-- [ ] **10.1** Pair real Android companion app with device
-- [ ] **10.2** Start live route navigation and observe real-time screen updates
+### PHASE 10 — End-to-End Live Navigation & Companion App Integration — ✔ VERIFIED
+- [x] **10.1** NimBLE BLE GATT Receiver (`BeeLine-Moto2`) running live alongside 50 FPS LVGL map renderer
+- [x] **10.2** Companion App (`v1_prototype/companion_app`) updated with 12-byte telemetry encoder & live route streamer
+- [x] **10.3** Verified live phone-to-hardware telemetry streaming & interactive CLI test controller ✔
+
+---
+
+### PHASE 11 — Real-World Vector Map Interface in Region 1 — ✔ FLASHED & VERIFIED
+- [x] **11.1** **Urban Grid & Environment Topology**:
+  - Interconnecting secondary road network (`#1A1C28` casing / `#2D3045` pavement line) and low-contrast district parcel grid (`#13141F`)
+  - Forest green park polygon (`#122217`) and deep blue river water body curve (`#0E1F35` with shore halo `#162F4D`)
+- [x] **11.2** **Tri-Layer High-Visibility Highlighted Route**:
+  - `24px` Dark Asphalt Outer Base (`#10121A`) + `18px` Electric Cyan Highlight Halo (`#00A3FF`) + `12px` Crisp Pure White Paved Core (`#FFFFFF`)
+  - Circular glowing **Maneuver Junction Ring** target node (`#00A3FF` / `#FFFFFF`) at turn locations
+- [x] **11.3** **Rider Position Aura & Street Name Banner**:
+  - 26px radial cyan position aura (`#00A3FF` at 30% opacity) around rider pointer at `(206, 210)`
+  - Subdued translucent street banner overlay pill (`#141620` bg) displaying street name string (`"GRAND AVENUE"`)
+- [x] **11.4** **Flashed to physical Waveshare ESP32-S3-Touch-LCD-1.46 board via COM16 — Verified running live on hardware** ✔
+

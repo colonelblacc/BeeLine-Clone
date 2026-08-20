@@ -17,12 +17,21 @@ import { Buffer } from 'buffer';
 
 export type TurnType = 0 | 1 | 2 | 3;
 
+export interface MapPoi {
+  type: number; // 0=None, 1=Parking, 2=Fuel, 3=EV, 4=Hazard, 5=Destination
+  xRelM: number;
+  yRelM: number;
+}
+
 export interface NavState {
   turnType: TurnType;
   distanceM: number;
   speedLimitKph: number;
   etaMin: number;
   useMetric: boolean;
+  tripProgressPct?: number;
+  sideRoadYOffset?: number;
+  poi?: MapPoi;
 }
 
 export interface DeviceEvent {
@@ -30,9 +39,9 @@ export interface DeviceEvent {
   eventType: 0 | 1; // 0=press, 1=long-press
 }
 
-/** Encode NavState into a 7-byte Base64 string for BLE write */
+/** Encode NavState into a 12-byte Base64 string for BLE write */
 export function encodeNavState(state: NavState): string {
-  const buf = new Uint8Array(7);
+  const buf = new Uint8Array(12);
   buf[0] = state.turnType & 0xff;
   buf[1] = state.distanceM & 0xff;
   buf[2] = (state.distanceM >> 8) & 0xff;
@@ -40,6 +49,11 @@ export function encodeNavState(state: NavState): string {
   buf[4] = state.etaMin & 0xff;
   buf[5] = (state.etaMin >> 8) & 0xff;
   buf[6] = state.useMetric ? 1 : 0;
+  buf[7] = (state.tripProgressPct || 0) & 0xff;
+  buf[8] = (state.sideRoadYOffset || 0) & 0xff;
+  buf[9] = (state.poi?.type || 0) & 0xff;
+  buf[10] = (state.poi?.xRelM || 0) & 0xff;
+  buf[11] = (state.poi?.yRelM || 0) & 0xff;
   return Buffer.from(buf).toString('base64');
 }
 

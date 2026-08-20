@@ -40,7 +40,6 @@ static esp_err_t panel_spd2010_mirror(esp_lcd_panel_t *panel, bool mirror_x, boo
 static esp_err_t panel_spd2010_swap_xy(esp_lcd_panel_t *panel, bool swap_axes);
 static esp_err_t panel_spd2010_set_gap(esp_lcd_panel_t *panel, int x_gap, int y_gap);
 static esp_err_t panel_spd2010_disp_on_off(esp_lcd_panel_t *panel, bool off);
-static esp_err_t panel_spd2010_disp_off(esp_lcd_panel_t *panel, bool off);
 
 typedef struct {
     esp_lcd_panel_t base;
@@ -76,7 +75,17 @@ esp_err_t esp_lcd_new_panel_spd2010(const esp_lcd_panel_io_handle_t io, const es
         ESP_GOTO_ON_ERROR(gpio_config(&io_conf), err, TAG, "configure GPIO for RST line failed");
     }
 
-    spd2010->madctl_val = 0;
+    switch (panel_dev_config->rgb_ele_order) {
+    case LCD_RGB_ELEMENT_ORDER_RGB:
+        spd2010->madctl_val = 0;
+        break;
+    case LCD_RGB_ELEMENT_ORDER_BGR:
+        spd2010->madctl_val |= LCD_CMD_BGR_BIT;
+        break;
+    default:
+        ESP_GOTO_ON_FALSE(false, ESP_ERR_NOT_SUPPORTED, err, TAG, "unsupported color element order");
+        break;
+    }
 
     uint8_t fb_bits_per_pixel = 0;
     switch (panel_dev_config->bits_per_pixel) {
@@ -86,6 +95,7 @@ esp_err_t esp_lcd_new_panel_spd2010(const esp_lcd_panel_io_handle_t io, const es
         break;
     case 18: // RGB666
         spd2010->colmod_val = 0x66;
+        // each color component (R/G/B) should occupy the 6 high bits of a byte, which means 3 full bytes are required for a pixel
         fb_bits_per_pixel = 24;
         break;
     case 24: // RGB888
@@ -753,9 +763,4 @@ static esp_err_t panel_spd2010_disp_on_off(esp_lcd_panel_t *panel, bool on_off)
     }
     ESP_RETURN_ON_ERROR(tx_param(spd2010, io, command, NULL, 0), TAG, "send command failed");
     return ESP_OK;
-}
-
-static esp_err_t panel_spd2010_disp_off(esp_lcd_panel_t *panel, bool off)
-{
-    return panel_spd2010_disp_on_off(panel, !off);
 }

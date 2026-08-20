@@ -32,6 +32,7 @@ export interface NavState {
   tripProgressPct?: number;
   sideRoadYOffset?: number;
   poi?: MapPoi;
+  streetName?: string;
 }
 
 export interface DeviceEvent {
@@ -39,9 +40,12 @@ export interface DeviceEvent {
   eventType: 0 | 1; // 0=press, 1=long-press
 }
 
-/** Encode NavState into a 12-byte Base64 string for BLE write */
+/** Encode NavState into a Base64 string for BLE write */
 export function encodeNavState(state: NavState): string {
-  const buf = new Uint8Array(12);
+  const streetNameBytes = state.streetName ? Buffer.from(state.streetName, 'utf8') : new Uint8Array(0);
+  const totalLen = 12 + Math.min(streetNameBytes.length, 31);
+  const buf = new Uint8Array(totalLen);
+  
   buf[0] = state.turnType & 0xff;
   buf[1] = state.distanceM & 0xff;
   buf[2] = (state.distanceM >> 8) & 0xff;
@@ -54,6 +58,11 @@ export function encodeNavState(state: NavState): string {
   buf[9] = (state.poi?.type || 0) & 0xff;
   buf[10] = (state.poi?.xRelM || 0) & 0xff;
   buf[11] = (state.poi?.yRelM || 0) & 0xff;
+  
+  if (streetNameBytes.length > 0) {
+    buf.set(streetNameBytes.subarray(0, 31), 12);
+  }
+  
   return Buffer.from(buf).toString('base64');
 }
 

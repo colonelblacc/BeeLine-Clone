@@ -54,11 +54,20 @@ export function NavigationScreen() {
         setEta(etaMinutes);
         
         if (bleConnected) {
+          const totalDist = route.totalDistanceM || 1;
+          const progressPct = Math.min(100, Math.max(0, Math.round(((totalDist - remainingDistM) / totalDist) * 100)));
+          const step = route.steps[stepIndex];
+          const rawInstruction = step?.instruction || '';
+          const streetName = rawInstruction.replace(/^(Turn\s+left\s+onto|Turn\s+right\s+onto|Head\s+|Continue\s+onto|Merge\s+onto|Keep\s+left\s+onto|Keep\s+right\s+onto)\s+/i, '').substring(0, 30) || 'ACTIVE ROUTE';
+
           writeNavState({
-            turnType: (route.steps[stepIndex]?.turnType ?? 0) as any,
+            turnType: (step?.turnType ?? 0) as any,
             distanceM: dist,
-            speedLimitKph: 0,
+            speedLimitKph: 50,
             etaMin: etaMinutes,
+            tripProgressPct: progressPct,
+            sideRoadYOffset: Math.min(45, Math.max(0, Math.round(((450 - dist) * 45) / 450))),
+            streetName: streetName.toUpperCase(),
             useMetric: useNavStore.getState().useMetric,
           }).catch(console.error);
         }

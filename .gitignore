@@ -1,0 +1,19 @@
+# PlatformIO / Firmware
+.pio/
+.pio
+*.elf
+*.bin
+
+# Python
+.venv/
+__pycache__/
+
+# Node / App
+node_modules/
+.expo/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -266,7 +266,7 @@ void process_serial_command(String cmd) {
 }
 
 static void update_sim_branches(float current_dist_f, uint8_t step) {
-    if (step == 4) { // Destination arrived
+    if (step == 1 || step == 4) { // Straight cruising road or Destination -> clean road with 0 branches
         nav_data.branch_count = 0;
         return;
     }

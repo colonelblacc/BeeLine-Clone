@@ -71,10 +71,12 @@ export async function searchPlaces(query: string, userLocation?: LatLng): Promis
 
 // ── Directions / Routing ──────────────────────────────────────────────────────
 
-/** Map Ola maneuver string to our TurnType (0=straight 1=left 2=right 3=u-turn) */
+/** Map Ola / MapLibre maneuver string to our TurnType (0=straight 1=left 2=right 3=u-turn 4=slight_left 5=slight_right 6=arrived) */
 function maneuverToTurnType(maneuver: string): number {
   if (!maneuver) return 0;
   const m = maneuver.toLowerCase();
+  if (m.includes('slight') && m.includes('left')) return 4;
+  if (m.includes('slight') && m.includes('right')) return 5;
   if (m.includes('left')) return 1;
   if (m.includes('right')) return 2;
   if (m.includes('u-turn') || m.includes('uturn')) return 3;
@@ -116,10 +118,10 @@ export async function getDirections(origin: LatLng, destination: LatLng): Promis
   if (!route) throw new Error('No route found');
 
   const leg = route.legs?.[0];
-  const steps: RouteStep[] = (leg?.steps ?? []).map((step: any) => ({
+  let steps: RouteStep[] = (leg?.steps ?? []).map((step: any) => ({
     turnType: maneuverToTurnType(step.maneuver ?? ''),
     distanceM: Math.round(step.distance ?? 0),
-    instruction: step.instructions?.replace(/<[^>]+>/g, '') ?? '',
+    instruction: step.instructions?.replace(/<[^>]+>/g, '') ?? 'Continue on route',
     location: {
       latitude: step.start_location?.lat ?? 0,
       longitude: step.start_location?.lng ?? 0,
@@ -132,13 +134,21 @@ export async function getDirections(origin: LatLng, destination: LatLng): Promis
 
   const polyline = polylineStr
     ? decodePolyline(polylineStr)
-    : [];
+    : [origin, destination];
+
+  // If steps are missing, generate start and destination steps
+  if (steps.length === 0) {
+    steps = [
+      { turnType: 0, distanceM: Math.round(leg?.distance ?? 1000), instruction: 'Head towards destination', location: origin },
+      { turnType: 6, distanceM: 0, instruction: 'Arrive at destination', location: destination },
+    ];
+  }
 
   return {
     polyline,
     steps,
-    totalDistanceM: leg?.distance ?? 0,
-    totalDurationSec: leg?.duration ?? 0,
+    totalDistanceM: leg?.distance ?? 1000,
+    totalDurationSec: leg?.duration ?? 300,
   };
 }
 

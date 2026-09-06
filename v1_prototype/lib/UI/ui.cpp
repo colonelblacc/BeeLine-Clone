@@ -1,657 +1,524 @@
 #include "ui.h"
 #include <stdio.h>
+#include <math.h>
 
-static lv_obj_t *scr = NULL;
-static int16_t dynamic_side_road_y = 164;
-static nav_turn_type_t current_turn_type = NAV_TURN_RIGHT;
-static map_poi_t current_poi = { POI_NONE, 0, 0 };
-static char current_street_name[32] = "GRAND AVENUE";
+// ── Navigation State (written by ui_update_nav_state, read by draw callback) ──
+static lv_obj_t         *scr                = NULL;
+static nav_turn_type_t   current_turn_type  = NAV_TURN_RIGHT;
+static map_poi_t         current_poi        = { POI_NONE, 0, 0 };
+static char              current_street_name[32] = "";
+static uint16_t          current_distance_m = 300;
+static bool              current_is_metric  = true;
+static uint8_t           current_speed_kph  = 70;
+static uint8_t           current_progress   = 35;
+static bool              current_ble_connected = false;
 
-// Map Background Vector Draw Callback (Renders real-world map grid, secondary roads, landmasses, junction node, and POIs)
-static void map_background_draw_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) == LV_EVENT_DRAW_MAIN) {
-        lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+// ── Target Coordinates (incoming from BLE) ────────────────────────────────────
+static lv_point_t        target_route_pts[8];
+static uint8_t           target_route_count  = 0;
+static route_branch_t    target_branches[3];
+static uint8_t           target_branch_count = 0;
 
-        // 1. Urban Block Grid / Sector Parcel Accents (Faint low-contrast background detail)
-        lv_draw_rect_dsc_t block_dsc;
-        lv_draw_rect_dsc_init(&block_dsc);
-        block_dsc.bg_color = lv_color_hex(0x13141F); // Dark urban block tint
-        block_dsc.bg_opa = LV_OPA_COVER;
-        block_dsc.border_color = lv_color_hex(0x191B28);
-        block_dsc.border_width = 1;
-        block_dsc.radius = 4;
+// ── Displayed Coordinates (50 FPS dead-reckoning interpolation) ────────────────
+static float             disp_route_x[8];
+static float             disp_route_y[8];
+static lv_point_t        active_route_pts[8];
+static uint8_t           active_route_count  = 0;
 
-        lv_area_t block1 = { 20, 20, 110, 80 };
-        lv_area_t block2 = { 150, 15, 270, 65 };
-        lv_area_t block3 = { 290, 30, 390, 95 };
-        lv_area_t block4 = { 30, 120, 130, 190 };
-        lv_area_t block5 = { 280, 125, 380, 200 };
+static float             disp_branch_x1[3], disp_branch_y1[3];
+static float             disp_branch_x2[3], disp_branch_y2[3];
+static route_branch_t    active_branches[3];
+static uint8_t           current_branch_count = 0;
 
-        lv_draw_rect(draw_ctx, &block_dsc, &block1);
-        lv_draw_rect(draw_ctx, &block_dsc, &block2);
-        lv_draw_rect(draw_ctx, &block_dsc, &block3);
-        lv_draw_rect(draw_ctx, &block_dsc, &block4);
-        lv_draw_rect(draw_ctx, &block_dsc, &block5);
+// ── Default Marketing / Boot Scene matching official BeeLine Moto II UI ───────
+static const lv_point_t BOOT_ROUTE[6] = {
+    {206, 222},
+    {206, 172},
+    {228, 158},
+    {232, 115},
+    {215, 80},
+    {195, 40}
+};
 
-        // 2. Park Landmass Polygon (Top Left Map Quadrant)
-        lv_point_t park_poly[4] = { {60, 35}, {145, 25}, {125, 115}, {45, 105} };
-        lv_draw_rect_dsc_t park_dsc;
-        lv_draw_rect_dsc_init(&park_dsc);
-        park_dsc.bg_color = lv_color_hex(0x122217); // Rich Forest Park Green #122217
-        park_dsc.bg_opa = LV_OPA_COVER;
-        park_dsc.border_color = lv_color_hex(0x1B3322);
-        park_dsc.border_width = 1;
-        lv_draw_polygon(draw_ctx, &park_dsc, park_poly, 4);
+static const route_branch_t BOOT_BRANCHES[2] = {
+    {206, 172, 115, 166}, // Left side street (~91px long)
+    {232, 115, 315, 120}  // Right side street (~83px long)
+};
 
-        // 3. River Water Body Curve (Top Right Map Quadrant)
-        lv_draw_line_dsc_t river_dsc;
-        lv_draw_line_dsc_init(&river_dsc);
-        river_dsc.color = lv_color_hex(0x0E1F35); // Deep Water Blue #0E1F35
-        river_dsc.width = 18;
-        river_dsc.round_start = true;
-        river_dsc.round_end = true;
+// Fallback polylines when phone sends turn type without coordinates
+static const lv_point_t RIGHT_PTS[]  = {{206,222},{206,175},{225,160},{260,155},{310,145},{350,120}};
+static const lv_point_t LEFT_PTS[]   = {{206,222},{206,175},{187,160},{150,155},{102,145},{62,120}};
+static const lv_point_t SL_RIGHT[]   = {{206,222},{206,175},{222,130},{248,90},{275,45}};
+static const lv_point_t SL_LEFT[]    = {{206,222},{206,175},{190,130},{164,90},{137,45}};
+static const lv_point_t UTURN_PTS[]  = {{206,222},{206,155},{175,135},{160,105},{175,75},{206,65}};
+static const lv_point_t STRAIGHT[]   = {{206,222},{206,175},{206,130},{206,90},{206,40}};
 
-        lv_point_t river_pts[] = { {355, 15}, {310, 70}, {365, 135} };
-        lv_draw_line(draw_ctx, &river_dsc, &river_pts[0], &river_pts[1]);
-        lv_draw_line(draw_ctx, &river_dsc, &river_pts[1], &river_pts[2]);
+// ─────────────────────────────────────────────────────────────────────────────
+//  THE SINGLE MASTER DRAW CALLBACK
+//  Renders authentic BeeLine Moto II UI:
+//  - Pitch black background
+//  - Side streets: two parallel thin white wireframe rails (curb lines)
+//  - Main active route: bold solid white road (15px wide)
+//  - Rider: sleek white chevron arrowhead
+//  - HUD: Turn icon, big distance + "m" below, speed limit badge
+//  - Bottom rim: thin grey track with bold white progress arc
+// ─────────────────────────────────────────────────────────────────────────────
+static void master_draw_cb(lv_event_t *e) {
+    if (lv_event_get_code(e) != LV_EVENT_DRAW_MAIN) return;
+    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
 
-        // Shoreline outline
-        river_dsc.color = lv_color_hex(0x162F4D);
-        river_dsc.width = 22;
-        river_dsc.opa = LV_OPA_40;
-        lv_draw_line(draw_ctx, &river_dsc, &river_pts[0], &river_pts[1]);
-        lv_draw_line(draw_ctx, &river_dsc, &river_pts[1], &river_pts[2]);
+    auto draw_line = [&](lv_color_t col, lv_coord_t w,
+                         lv_coord_t x1, lv_coord_t y1,
+                         lv_coord_t x2, lv_coord_t y2) {
+        lv_draw_line_dsc_t d; lv_draw_line_dsc_init(&d);
+        d.color = col; d.width = w; d.round_start = d.round_end = true;
+        lv_point_t a{x1,y1}, b{x2,y2};
+        lv_draw_line(draw_ctx, &d, &a, &b);
+    };
 
-        // 4. Interconnecting Secondary & Arterial Background Road Grid
-        lv_draw_line_dsc_t sec_casing_dsc, sec_road_dsc;
-        lv_draw_line_dsc_init(&sec_casing_dsc);
-        sec_casing_dsc.color = lv_color_hex(0x1A1C28); // Secondary road casing #1A1C28
-        sec_casing_dsc.width = 8;
-        sec_casing_dsc.round_start = true;
-        sec_casing_dsc.round_end = true;
+    // ── 1. SIDE STREETS (BeeLine Moto 2 Wireframe Rails: two parallel thin white lines) ──
+    // Drawn first so the thick main active route cleanly masks their intersection roots.
+    for (uint8_t b = 0; b < current_branch_count; b++) {
+        float bx1 = (float)active_branches[b].x1;
+        float by1 = (float)active_branches[b].y1;
+        float bx2 = (float)active_branches[b].x2;
+        float by2 = (float)active_branches[b].y2;
 
-        lv_draw_line_dsc_init(&sec_road_dsc);
-        sec_road_dsc.color = lv_color_hex(0x2D3045); // Secondary road pavement #2D3045
-        sec_road_dsc.width = 4;
-        sec_road_dsc.round_start = true;
-        sec_road_dsc.round_end = true;
+        // Auto-anchor branch root to active route polyline so it NEVER detaches at turns
+        if (active_route_count >= 2) {
+            float best_dist2 = 999999.0f;
+            float best_qx = bx1, best_qy = by1;
 
-        // Arterial Cross Avenue 1 (Intersecting at maneuver junction Y ~155)
-        lv_point_t sec1[] = { {30, 160}, {382, 150} };
-        lv_draw_line(draw_ctx, &sec_casing_dsc, &sec1[0], &sec1[1]);
-        lv_draw_line(draw_ctx, &sec_road_dsc, &sec1[0], &sec1[1]);
-
-        // Secondary Cross Avenue 2 (Upper Map Grid Y ~80)
-        lv_point_t sec2[] = { {50, 75}, {360, 85} };
-        lv_draw_line(draw_ctx, &sec_casing_dsc, &sec2[0], &sec2[1]);
-        lv_draw_line(draw_ctx, &sec_road_dsc, &sec2[0], &sec2[1]);
-
-        // Diagonal Arterial Avenue (Sloped West-to-East)
-        lv_point_t sec3[] = { {70, 195}, {160, 55} };
-        lv_draw_line(draw_ctx, &sec_casing_dsc, &sec3[0], &sec3[1]);
-        lv_draw_line(draw_ctx, &sec_road_dsc, &sec3[0], &sec3[1]);
-
-        // Diagonal Street 2 (East side)
-        lv_point_t sec4[] = { {255, 55}, {350, 185} };
-        lv_draw_line(draw_ctx, &sec_casing_dsc, &sec4[0], &sec4[1]);
-        lv_draw_line(draw_ctx, &sec_road_dsc, &sec4[0], &sec4[1]);
-
-        // 5. Dynamic Parallel Fading White Side Streets (Intersections Scrolling with Real Map Slopes)
-        lv_draw_line_dsc_t side_line_dsc;
-        lv_draw_line_dsc_init(&side_line_dsc);
-        side_line_dsc.color = lv_color_hex(0xCCCCCC); // Dim Light Gray #CCCCCC
-        side_line_dsc.width = 4;                      // 4px line thickness
-        side_line_dsc.round_start = true;
-        side_line_dsc.round_end = true;
-
-        // Render Two Upcoming Side Street Intersections Simultaneously
-        for (int j = 0; j < 2; j++) {
-            int base_y = (j == 0) ? dynamic_side_road_y : (((dynamic_side_road_y + 110) % 200) + 40);
-            if (base_y < 35 || base_y > 235) continue;
-
-            int y_top = base_y;
-            int y_bot = y_top + 12;
-
-            int x_center = 206;
-            if (current_turn_type == NAV_TURN_LEFT || current_turn_type == NAV_TURN_SLIGHT_LEFT) {
-                if (y_top <= 170 && y_top >= 130) {
-                    x_center = 206 - ((170 - y_top) * 34 / 40);
+            auto check_seg = [&](float p1x, float p1y, float p2x, float p2y) {
+                float vx = p2x - p1x, vy = p2y - p1y;
+                float seg_len2 = vx * vx + vy * vy;
+                if (seg_len2 > 1.0f) {
+                    float t = ((bx1 - p1x) * vx + (by1 - p1y) * vy) / seg_len2;
+                    if (t < 0.0f) t = 0.0f;
+                    else if (t > 1.0f) t = 1.0f;
+                    float qx = p1x + t * vx;
+                    float qy = p1y + t * vy;
+                    float d2 = (bx1 - qx) * (bx1 - qx) + (by1 - qy) * (by1 - qy);
+                    if (d2 < best_dist2) {
+                        best_dist2 = d2;
+                        best_qx = qx;
+                        best_qy = qy;
+                    }
                 }
-            } else if (current_turn_type == NAV_TURN_RIGHT || current_turn_type == NAV_TURN_SLIGHT_RIGHT) {
-                if (y_top <= 170 && y_top >= 130) {
-                    x_center = 206 + ((170 - y_top) * 34 / 40);
-                }
+            };
+
+            // Check grounding road (206, 222) -> pts[0]
+            check_seg(206.0f, 222.0f, (float)active_route_pts[0].x, (float)active_route_pts[0].y);
+            // Check all route segments
+            for (uint8_t i = 0; i < active_route_count - 1; i++) {
+                check_seg((float)active_route_pts[i].x, (float)active_route_pts[i].y,
+                          (float)active_route_pts[i + 1].x, (float)active_route_pts[i + 1].y);
             }
 
-            int left_start_x = x_center + 8;
-            int slope_left = (j == 0) ? -1 : 1;
-
-            for (int i = 0; i < 15; i++) {
-                int x1 = left_start_x - (i * 5);
-                int x2 = left_start_x - ((i + 1) * 5);
-                if (x2 < left_start_x - 70) x2 = left_start_x - 70;
-
-                int y1_t = y_top + (i * slope_left);
-                int y2_t = y_top + ((i + 1) * slope_left);
-                int y1_b = y_bot + (i * slope_left);
-                int y2_b = y_bot + ((i + 1) * slope_left);
-
-                int opa_val = 140 - (i * 9);
-                if (opa_val < 20) opa_val = 20;
-                side_line_dsc.opa = (lv_opa_t)opa_val;
-
-                lv_point_t p_top1 = { (int16_t)x1, (int16_t)y1_t };
-                lv_point_t p_top2 = { (int16_t)x2, (int16_t)y2_t };
-                lv_draw_line(draw_ctx, &side_line_dsc, &p_top1, &p_top2);
-
-                lv_point_t p_bot1 = { (int16_t)x1, (int16_t)y1_b };
-                lv_point_t p_bot2 = { (int16_t)x2, (int16_t)y2_b };
-                lv_draw_line(draw_ctx, &side_line_dsc, &p_bot1, &p_bot2);
-            }
-
-            int ry_top = y_top - 20;
-            int ry_bot = ry_top + 12;
-
-            int rx_center = 206;
-            if (current_turn_type == NAV_TURN_LEFT || current_turn_type == NAV_TURN_SLIGHT_LEFT) {
-                if (ry_top <= 170 && ry_top >= 130) {
-                    rx_center = 206 - ((170 - ry_top) * 34 / 40);
-                }
-            } else if (current_turn_type == NAV_TURN_RIGHT || current_turn_type == NAV_TURN_SLIGHT_RIGHT) {
-                if (ry_top <= 170 && ry_top >= 130) {
-                    rx_center = 206 + ((170 - ry_top) * 34 / 40);
-                }
-            }
-
-            int right_start_x = rx_center - 8;
-            int slope_right = (j == 0) ? -1 : 1;
-
-            for (int i = 0; i < 15; i++) {
-                int x1 = right_start_x + (i * 5);
-                int x2 = right_start_x + ((i + 1) * 5);
-                if (x2 > right_start_x + 70) x2 = right_start_x + 70;
-
-                int ry1_t = ry_top + (i * slope_right);
-                int ry2_t = ry_top + ((i + 1) * slope_right);
-                int ry1_b = ry_bot + (i * slope_right);
-                int ry2_b = ry_bot + ((i + 1) * slope_right);
-
-                int opa_val = 140 - (i * 9);
-                if (opa_val < 20) opa_val = 20;
-                side_line_dsc.opa = (lv_opa_t)opa_val;
-
-                lv_point_t p_top1 = { (int16_t)x1, (int16_t)ry1_t };
-                lv_point_t p_top2 = { (int16_t)x2, (int16_t)ry2_t };
-                lv_draw_line(draw_ctx, &side_line_dsc, &p_top1, &p_top2);
-
-                lv_point_t p_bot1 = { (int16_t)x1, (int16_t)ry1_b };
-                lv_point_t p_bot2 = { (int16_t)x2, (int16_t)ry2_b };
-                lv_draw_line(draw_ctx, &side_line_dsc, &p_bot1, &p_bot2);
+            // If branch root is within 40px of the active route, anchor root directly to route centerline
+            if (best_dist2 < 1600.0f) {
+                bx1 = best_qx;
+                by1 = best_qy;
             }
         }
 
-        // Dynamic Real-World Map POI Badges (Parking 🅿, Fuel ⛽, EV ⚡, Hazard ⚠️, Destination 🏁)
-        if (current_poi.type != POI_NONE) {
-            int poi_screen_x = 206 + current_poi.x_rel_m;
-            int poi_screen_y = 210 - current_poi.y_rel_m;
+        float dx = bx2 - bx1;
+        float dy = by2 - by1;
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len > 3.0f) {
+            float ux = dx / len;
+            float uy = dy / len;
+            float nx = -uy;
+            float ny =  ux;
+            float hw = 8.5f; // Center-to-center: 17px. Leaves exact 14px hollow interior between 3px rails
 
-            if (poi_screen_x >= 30 && poi_screen_x <= 382 && poi_screen_y >= 30 && poi_screen_y <= 382) {
-                lv_draw_rect_dsc_t poi_bg;
-                lv_draw_rect_dsc_init(&poi_bg);
-                poi_bg.radius = LV_RADIUS_CIRCLE;
-                poi_bg.bg_opa = LV_OPA_COVER;
-                poi_bg.border_width = 2;
+            lv_draw_line_dsc_t sd; lv_draw_line_dsc_init(&sd);
+            sd.color = lv_color_hex(0xFFFFFF); // Crisp brilliant white rails
+            sd.width = 3;
+            sd.round_start = sd.round_end = true;
 
-                const char *symbol_str = "P";
-                if (current_poi.type == POI_PARKING) {
-                    poi_bg.bg_color = lv_color_hex(0x007AFF); // Blue Parking 🅿
-                    poi_bg.border_color = lv_color_hex(0xFFFFFF);
-                    symbol_str = "P";
-                } else if (current_poi.type == POI_FUEL) {
-                    poi_bg.bg_color = lv_color_hex(0xFF9500); // Amber Fuel ⛽
-                    poi_bg.border_color = lv_color_hex(0xFFFFFF);
-                    symbol_str = "F";
-                } else if (current_poi.type == POI_EV_CHARGER) {
-                    poi_bg.bg_color = lv_color_hex(0x34C759); // Green EV ⚡
-                    poi_bg.border_color = lv_color_hex(0xFFFFFF);
-                    symbol_str = "E";
-                } else if (current_poi.type == POI_HAZARD) {
-                    poi_bg.bg_color = lv_color_hex(0xFF3B30); // Red Hazard ⚠️
-                    poi_bg.border_color = lv_color_hex(0xFFFFFF);
-                    symbol_str = "!";
-                } else if (current_poi.type == POI_DESTINATION) {
-                    poi_bg.bg_color = lv_color_hex(0xAF52DE); // Purple Destination 🏁
-                    poi_bg.border_color = lv_color_hex(0xFFFFFF);
-                    symbol_str = "D";
-                }
+            // Penetrate 7px into the main road body so rails emerge seamlessly with 0 gap
+            float start_x = bx1 - ux * 7.0f;
+            float start_y = by1 - uy * 7.0f;
 
-                // Draw 24x24 Circular POI Badge Container
-                lv_area_t poi_area = {
-                    (lv_coord_t)(poi_screen_x - 13),
-                    (lv_coord_t)(poi_screen_y - 13),
-                    (lv_coord_t)(poi_screen_x + 13),
-                    (lv_coord_t)(poi_screen_y + 13)
-                };
-                lv_draw_rect(draw_ctx, &poi_bg, &poi_area);
+            // Rail 1
+            lv_point_t r1_a = {(lv_coord_t)roundf(start_x + nx * hw), (lv_coord_t)roundf(start_y + ny * hw)};
+            lv_point_t r1_b = {(lv_coord_t)roundf(bx2 + nx * hw), (lv_coord_t)roundf(by2 + ny * hw)};
+            lv_draw_line(draw_ctx, &sd, &r1_a, &r1_b);
 
-                // Draw POI text label inside circle
-                lv_draw_label_dsc_t poi_lbl_dsc;
-                lv_draw_label_dsc_init(&poi_lbl_dsc);
-                poi_lbl_dsc.color = lv_color_hex(0xFFFFFF);
-                poi_lbl_dsc.font = &lv_font_montserrat_14;
-                poi_lbl_dsc.align = LV_TEXT_ALIGN_CENTER;
-
-                lv_area_t txt_area = {
-                    (lv_coord_t)(poi_screen_x - 10),
-                    (lv_coord_t)(poi_screen_y - 8),
-                    (lv_coord_t)(poi_screen_x + 10),
-                    (lv_coord_t)(poi_screen_y + 8)
-                };
-                lv_draw_label(draw_ctx, &poi_lbl_dsc, &txt_area, symbol_str, NULL);
-            }
+            // Rail 2
+            lv_point_t r2_a = {(lv_coord_t)roundf(start_x - nx * hw), (lv_coord_t)roundf(start_y - ny * hw)};
+            lv_point_t r2_b = {(lv_coord_t)roundf(bx2 - nx * hw), (lv_coord_t)roundf(by2 - ny * hw)};
+            lv_draw_line(draw_ctx, &sd, &r2_a, &r2_b);
         }
     }
-}
 
-// Map Abstraction Objects & Line Objects
-static lv_obj_t *map_bg_obj = NULL;
-static lv_obj_t *route_line_casing = NULL;
-static lv_obj_t *route_line_glow = NULL;
-static lv_obj_t *route_line_main = NULL;
-static lv_obj_t *street_banner_obj = NULL;
-static lv_obj_t *street_banner_label = NULL;
+    // ── 2. MAIN ACTIVE ROUTE (Thick solid white road) ────────────────────────
+    const lv_point_t *pts = active_route_pts;
+    uint8_t           n   = active_route_count;
+    if (n >= 2) {
+        lv_draw_line_dsc_t rd; lv_draw_line_dsc_init(&rd);
+        rd.color = lv_color_hex(0xFFFFFF);
+        rd.width = 15;
+        rd.round_start = rd.round_end = true;
 
-// Custom Draw Callback for Inverted Pure White Rider Pointer Arrow
-static void rider_arrow_draw_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) == LV_EVENT_DRAW_MAIN) {
-        lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+        // Grounding segment from rider arrow tip (206, 222) to pts[0]
+        lv_point_t p_rider = {206, 222};
+        lv_draw_line(draw_ctx, &rd, &p_rider, (lv_point_t *)&pts[0]);
 
-        // 1. Black Outer Outline Wings for sharp contrast over active highlighted route line
-        lv_point_t black_left_wing[3]  = { {206, 199}, {172, 249}, {206, 230} };
-        lv_point_t black_right_wing[3] = { {206, 199}, {206, 230}, {240, 249} };
-
-        lv_draw_rect_dsc_t black_dsc;
-        lv_draw_rect_dsc_init(&black_dsc);
-        black_dsc.bg_color = lv_color_hex(0x000000);
-        black_dsc.bg_opa = LV_OPA_COVER;
-        black_dsc.border_color = lv_color_hex(0x000000);
-        black_dsc.border_width = 3;
-        black_dsc.border_opa = LV_OPA_COVER;
-
-        lv_draw_polygon(draw_ctx, &black_dsc, black_left_wing, 3);
-        lv_draw_polygon(draw_ctx, &black_dsc, black_right_wing, 3);
-
-        // 2. Inverted Solid Pure White Navigation Arrow
-        lv_point_t white_left_wing[3]  = { {206, 204}, {176, 245}, {206, 227} };
-        lv_point_t white_right_wing[3] = { {206, 204}, {206, 227}, {236, 245} };
-
-        lv_draw_rect_dsc_t white_dsc;
-        lv_draw_rect_dsc_init(&white_dsc);
-        white_dsc.bg_color = lv_color_hex(0xFFFFFF);
-        white_dsc.bg_opa = LV_OPA_COVER;
-        white_dsc.border_width = 0;
-
-        lv_draw_polygon(draw_ctx, &white_dsc, white_left_wing, 3);
-        lv_draw_polygon(draw_ctx, &white_dsc, white_right_wing, 3);
+        for (uint8_t i = 0; i < n - 1; i++) {
+            lv_draw_line(draw_ctx, &rd, (lv_point_t *)&pts[i], (lv_point_t *)&pts[i + 1]);
+        }
     }
-}
 
-// Turn Icon Vector Draw Callback (Renders smooth rounded 90° fillet vector turn arrows ⤷, ↰, ↑)
-static void turn_arrow_draw_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) == LV_EVENT_DRAW_MAIN) {
-        lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+    // ── 3. RIDER POINTER ARROW ▲ (White Delta Chevron with Bold Black Outline) ─
+    {
+        // 3a. Outer black casing (3-4px wider than white arrow to clearly separate from road)
+        lv_draw_rect_dsc_t bd; lv_draw_rect_dsc_init(&bd);
+        bd.bg_color = lv_color_hex(0x000000); bd.bg_opa = LV_OPA_COVER;
+        bd.border_width = 0;
+        lv_point_t bl[3] = {{206, 212}, {182, 250}, {206, 239}};
+        lv_point_t br[3] = {{206, 212}, {206, 239}, {230, 250}};
+        lv_draw_polygon(draw_ctx, &bd, bl, 3);
+        lv_draw_polygon(draw_ctx, &bd, br, 3);
 
-        lv_draw_line_dsc_t line_dsc;
-        lv_draw_line_dsc_init(&line_dsc);
-        line_dsc.color = lv_color_hex(0xFFFFFF);
-        line_dsc.width = 9; // Bold 9px vector line
-        line_dsc.round_start = true;
-        line_dsc.round_end = true;
+        // 3b. Robust black perimeter outline
+        draw_line(lv_color_hex(0x000000), 4, 206, 212, 182, 250);
+        draw_line(lv_color_hex(0x000000), 4, 182, 250, 206, 239);
+        draw_line(lv_color_hex(0x000000), 4, 206, 239, 230, 250);
+        draw_line(lv_color_hex(0x000000), 4, 230, 250, 206, 212);
+
+        // 3c. Inner pure white arrowhead
+        lv_draw_rect_dsc_t wd; lv_draw_rect_dsc_init(&wd);
+        wd.bg_color = lv_color_hex(0xFFFFFF); wd.bg_opa = LV_OPA_COVER;
+        wd.border_width = 0;
+        lv_point_t wl[3] = {{206, 218}, {186, 245}, {206, 236}};
+        lv_point_t wr[3] = {{206, 218}, {206, 236}, {226, 245}};
+        lv_draw_polygon(draw_ctx, &wd, wl, 3);
+        lv_draw_polygon(draw_ctx, &wd, wr, 3);
+    }
+
+    // ── 4. POI BADGE (Optional) ───────────────────────────────────────────────
+    if (current_poi.type != POI_NONE) {
+        int px = 206 + current_poi.x_rel_m;
+        int py = 210 - current_poi.y_rel_m;
+        if (px >= 30 && px <= 382 && py >= 30 && py <= 220) {
+            lv_draw_rect_dsc_t pd; lv_draw_rect_dsc_init(&pd);
+            pd.radius = LV_RADIUS_CIRCLE; pd.bg_opa = LV_OPA_COVER; pd.border_width = 2;
+            const char *sym = "P";
+            switch (current_poi.type) {
+                case POI_PARKING:     pd.bg_color = lv_color_hex(0x007AFF); sym = "P"; break;
+                case POI_FUEL:        pd.bg_color = lv_color_hex(0xFF9500); sym = "F"; break;
+                case POI_EV_CHARGER:  pd.bg_color = lv_color_hex(0x34C759); sym = "E"; break;
+                case POI_HAZARD:      pd.bg_color = lv_color_hex(0xFF3B30); sym = "!"; break;
+                case POI_DESTINATION: pd.bg_color = lv_color_hex(0xAF52DE); sym = "D"; break;
+                default: break;
+            }
+            pd.border_color = lv_color_hex(0xFFFFFF);
+            lv_area_t pa{(lv_coord_t)(px-13),(lv_coord_t)(py-13),(lv_coord_t)(px+13),(lv_coord_t)(py+13)};
+            lv_draw_rect(draw_ctx, &pd, &pa);
+            lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+            ld.color = lv_color_hex(0xFFFFFF); ld.font = &lv_font_montserrat_14;
+            ld.align = LV_TEXT_ALIGN_CENTER;
+            lv_area_t ta{(lv_coord_t)(px-10),(lv_coord_t)(py-8),(lv_coord_t)(px+10),(lv_coord_t)(py+8)};
+            lv_draw_label(draw_ctx, &ld, &ta, sym, NULL);
+        }
+    }
+
+    // 4b. Street / Test Scenario Banner (shown when street_name is set)
+    if (current_street_name[0] != '\0') {
+        lv_draw_rect_dsc_t rd; lv_draw_rect_dsc_init(&rd);
+        rd.bg_color = lv_color_hex(0x141620); rd.bg_opa = LV_OPA_80;
+        rd.border_color = lv_color_hex(0x2A2D3D); rd.border_width = 1;
+        rd.radius = LV_RADIUS_CIRCLE;
+        lv_area_t ba{80, 8, 332, 34};
+        lv_draw_rect(draw_ctx, &rd, &ba);
+
+        lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+        ld.color = lv_color_hex(0xE0E6ED); ld.font = &lv_font_montserrat_14;
+        ld.align = LV_TEXT_ALIGN_CENTER;
+        lv_area_t ta{80, 12, 332, 30};
+        lv_draw_label(draw_ctx, &ld, &ta, current_street_name, NULL);
+    }
+
+    // ── 5. HUD PANEL: TURN ICON, DISTANCE, SPEED LIMIT ────────────────────────
+
+    // 5a. Turn icon (Vector arrows in crisp white, line width 6px)
+    {
+        lv_draw_line_dsc_t ld; lv_draw_line_dsc_init(&ld);
+        ld.color = lv_color_hex(0xFFFFFF); ld.width = 6;
+        ld.round_start = ld.round_end = true;
 
         if (current_turn_type == NAV_TURN_RIGHT || current_turn_type == NAV_TURN_SLIGHT_RIGHT) {
-            // Smooth Vector Curved Right Turn Arrow (⤷ shape with smooth 90° fillet curve)
-            lv_point_t stem[] = {
-                {110, 320},
-                {110, 290},
-                {113, 283},
-                {119, 277},
-                {127, 274},
-                {155, 274}
-            };
-            for (int i = 0; i < 5; i++) {
-                lv_draw_line(draw_ctx, &line_dsc, &stem[i], &stem[i + 1]);
-            }
-
-            // Right Arrowhead
-            lv_point_t head1[] = { {143, 262}, {161, 274} };
-            lv_point_t head2[] = { {143, 286}, {161, 274} };
-            lv_draw_line(draw_ctx, &line_dsc, &head1[0], &head1[1]);
-            lv_draw_line(draw_ctx, &line_dsc, &head2[0], &head2[1]);
+            // 90° right turn curve (⤷)
+            lv_point_t stem[] = {{126, 326}, {126, 296}, {129, 288}, {136, 282}, {152, 282}};
+            for (int i = 0; i < 4; i++) lv_draw_line(draw_ctx, &ld, &stem[i], &stem[i+1]);
+            lv_point_t h1[] = {{144, 274}, {156, 282}}; lv_draw_line(draw_ctx, &ld, &h1[0], &h1[1]);
+            lv_point_t h2[] = {{144, 290}, {156, 282}}; lv_draw_line(draw_ctx, &ld, &h2[0], &h2[1]);
         } else if (current_turn_type == NAV_TURN_LEFT || current_turn_type == NAV_TURN_SLIGHT_LEFT) {
-            // Smooth Vector Curved Left Turn Arrow (↰ shape with smooth 90° fillet curve)
-            lv_point_t stem[] = {
-                {155, 320},
-                {155, 290},
-                {152, 283},
-                {146, 277},
-                {138, 274},
-                {110, 274}
-            };
-            for (int i = 0; i < 5; i++) {
-                lv_draw_line(draw_ctx, &line_dsc, &stem[i], &stem[i + 1]);
-            }
-
-            // Left Arrowhead
-            lv_point_t head1[] = { {122, 262}, {104, 274} };
-            lv_point_t head2[] = { {122, 286}, {104, 274} };
-            lv_draw_line(draw_ctx, &line_dsc, &head1[0], &head1[1]);
-            lv_draw_line(draw_ctx, &line_dsc, &head2[0], &head2[1]);
+            // 90° left turn curve (↰)
+            lv_point_t stem[] = {{156, 326}, {156, 296}, {153, 288}, {146, 282}, {130, 282}};
+            for (int i = 0; i < 4; i++) lv_draw_line(draw_ctx, &ld, &stem[i], &stem[i+1]);
+            lv_point_t h1[] = {{138, 274}, {126, 282}}; lv_draw_line(draw_ctx, &ld, &h1[0], &h1[1]);
+            lv_point_t h2[] = {{138, 290}, {126, 282}}; lv_draw_line(draw_ctx, &ld, &h2[0], &h2[1]);
+        } else if (current_turn_type == NAV_TURN_UTURN) {
+            lv_point_t stem[] = {{156, 326}, {156, 284}, {150, 274}, {132, 274}, {126, 284}, {126, 302}};
+            for (int i = 0; i < 5; i++) lv_draw_line(draw_ctx, &ld, &stem[i], &stem[i+1]);
+            lv_point_t h1[] = {{118, 292}, {126, 302}}; lv_draw_line(draw_ctx, &ld, &h1[0], &h1[1]);
+            lv_point_t h2[] = {{134, 292}, {126, 302}}; lv_draw_line(draw_ctx, &ld, &h2[0], &h2[1]);
+        } else if (current_turn_type == NAV_TURN_ARRIVED) {
+            // Star destination pin
+            draw_line(lv_color_hex(0xFFFFFF), 5, 140, 320, 140, 275);
+            draw_line(lv_color_hex(0xFFFFFF), 5, 118, 298, 162, 298);
+            draw_line(lv_color_hex(0xFFFFFF), 4, 124, 282, 156, 314);
+            draw_line(lv_color_hex(0xFFFFFF), 4, 156, 282, 124, 314);
         } else {
-            // Vector Straight Arrow (↑ shape)
-            lv_point_t stem[] = { {135, 320}, {135, 273} };
-            lv_draw_line(draw_ctx, &line_dsc, &stem[0], &stem[1]);
+            // Straight ↑
+            draw_line(lv_color_hex(0xFFFFFF), 6, 140, 326, 140, 282);
+            draw_line(lv_color_hex(0xFFFFFF), 6, 128, 294, 140, 282);
+            draw_line(lv_color_hex(0xFFFFFF), 6, 152, 294, 140, 282);
+        }
+    }
 
-            lv_point_t head1[] = { {123, 285}, {135, 273} };
-            lv_point_t head2[] = { {147, 285}, {135, 273} };
-            lv_draw_line(draw_ctx, &line_dsc, &head1[0], &head1[1]);
-            lv_draw_line(draw_ctx, &line_dsc, &head2[0], &head2[1]);
+    // 5b. Distance value (Montserrat 48) + unit (Montserrat 24 directly below)
+    {
+        char val_buf[16], unit_buf[8];
+        if (current_is_metric) {
+            if (current_distance_m >= 1000) {
+                snprintf(val_buf, sizeof(val_buf), "%.1f", current_distance_m / 1000.0f);
+                snprintf(unit_buf, sizeof(unit_buf), "km");
+            } else {
+                snprintf(val_buf, sizeof(val_buf), "%u", current_distance_m);
+                snprintf(unit_buf, sizeof(unit_buf), "m");
+            }
+        } else {
+            uint32_t ft = (uint32_t)(current_distance_m * 3.28084f);
+            if (ft >= 5280) {
+                snprintf(val_buf, sizeof(val_buf), "%.1f", ft / 5280.0f);
+                snprintf(unit_buf, sizeof(unit_buf), "mi");
+            } else {
+                snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)ft);
+                snprintf(unit_buf, sizeof(unit_buf), "ft");
+            }
+        }
+
+        lv_draw_label_dsc_t dv; lv_draw_label_dsc_init(&dv);
+        dv.color = lv_color_hex(0xFFFFFF); dv.font = &lv_font_montserrat_48;
+        lv_area_t va{175, 268, 265, 318};
+        lv_draw_label(draw_ctx, &dv, &va, val_buf, NULL);
+
+        lv_draw_label_dsc_t du; lv_draw_label_dsc_init(&du);
+        du.color = lv_color_hex(0xFFFFFF); du.font = &lv_font_montserrat_24;
+        lv_area_t ua{178, 314, 230, 344};
+        lv_draw_label(draw_ctx, &du, &ua, unit_buf, NULL);
+    }
+
+    // 5c. Speed limit badge (circle, red ring, black numeral) — to the right of distance
+    if (current_speed_kph > 0) {
+        lv_draw_rect_dsc_t bd; lv_draw_rect_dsc_init(&bd);
+        bd.radius = LV_RADIUS_CIRCLE; bd.bg_color = lv_color_hex(0xFFFFFF);
+        bd.bg_opa = LV_OPA_COVER; bd.border_color = lv_color_hex(0xFF3B30);
+        bd.border_width = 4;
+        lv_area_t ba{284, 264, 332, 312};
+        lv_draw_rect(draw_ctx, &bd, &ba);
+
+        char spd[8]; snprintf(spd, sizeof(spd), "%u", current_speed_kph);
+        lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+        ld.color = lv_color_hex(0x000000); ld.font = &lv_font_montserrat_24;
+        ld.align = LV_TEXT_ALIGN_CENTER;
+        lv_area_t la{284, 277, 332, 305};
+        lv_draw_label(draw_ctx, &ld, &la, spd, NULL);
+    }
+
+    // ── 6. PROGRESS RIM ARC (Bottom Circumference Rim: 140° to 40°) ───────────
+    // In LVGL: 0° is 3 o'clock, 90° is 6 o'clock (bottom center), 140° is ~7:30 (bottom-left).
+    // Inactive track: thin charcoal arc across bottom rim from 40° to 140°.
+    // Active progress: bold pure white arc starting at 140° (bottom-left) filling toward right.
+    {
+        lv_point_t center = {206, 206};
+
+        // Inactive background track
+        lv_draw_arc_dsc_t arc_bg; lv_draw_arc_dsc_init(&arc_bg);
+        arc_bg.color = lv_color_hex(0x35373E);
+        arc_bg.width = 3;
+        arc_bg.rounded = 1;
+        lv_draw_arc(draw_ctx, &arc_bg, &center, 194, 40, 140);
+
+        // Active progress arc (pure brilliant white with rounded cap)
+        if (current_progress > 0) {
+            lv_draw_arc_dsc_t arc_fg; lv_draw_arc_dsc_init(&arc_fg);
+            arc_fg.color = lv_color_hex(0xFFFFFF);
+            arc_fg.width = 7;
+            arc_fg.rounded = 1;
+            uint16_t span = (current_progress > 100 ? 100 : current_progress);
+            uint16_t start_angle = 140 - span;
+            lv_draw_arc(draw_ctx, &arc_fg, &center, 194, start_angle, 140);
         }
     }
 }
 
-// UI Objects
-static lv_obj_t *rider_pointer_obj = NULL;
-static lv_obj_t *turn_icon_obj = NULL;
-static lv_obj_t *distance_val_label = NULL;
-static lv_obj_t *distance_unit_label = NULL;
+// ── 50 FPS (20ms) Smooth Dead-Reckoning Interpolation Timer ──────────────────
+static void anim_timer_cb(lv_timer_t *timer) {
+    if (!scr) return;
+    bool changed = false;
 
-// Speed Limit Badge Elements
-static lv_obj_t *speed_badge = NULL;
-static lv_obj_t *speed_label = NULL;
+    // Smoothly glide active route polyline toward target coordinates
+    for (uint8_t i = 0; i < active_route_count; i++) {
+        float dx = (float)target_route_pts[i].x - disp_route_x[i];
+        float dy = (float)target_route_pts[i].y - disp_route_y[i];
+        if (fabsf(dx) > 0.2f || fabsf(dy) > 0.2f) {
+            disp_route_x[i] += dx * 0.35f;
+            disp_route_y[i] += dy * 0.35f;
+            active_route_pts[i].x = (lv_coord_t)roundf(disp_route_x[i]);
+            active_route_pts[i].y = (lv_coord_t)roundf(disp_route_y[i]);
+            changed = true;
+        } else {
+            active_route_pts[i] = target_route_pts[i];
+            disp_route_x[i]     = (float)target_route_pts[i].x;
+            disp_route_y[i]     = (float)target_route_pts[i].y;
+        }
+    }
 
-// Progress Arc & Status Elements
-static lv_obj_t *progress_arc = NULL;
-static lv_obj_t *ble_status_label = NULL;
+    // Smoothly glide junction branch wireframe coordinates toward targets
+    for (uint8_t b = 0; b < current_branch_count; b++) {
+        float dx1 = (float)target_branches[b].x1 - disp_branch_x1[b];
+        float dy1 = (float)target_branches[b].y1 - disp_branch_y1[b];
+        float dx2 = (float)target_branches[b].x2 - disp_branch_x2[b];
+        float dy2 = (float)target_branches[b].y2 - disp_branch_y2[b];
+        if (fabsf(dx1) > 0.2f || fabsf(dy1) > 0.2f || fabsf(dx2) > 0.2f || fabsf(dy2) > 0.2f) {
+            disp_branch_x1[b] += dx1 * 0.35f;
+            disp_branch_y1[b] += dy1 * 0.35f;
+            disp_branch_x2[b] += dx2 * 0.35f;
+            disp_branch_y2[b] += dy2 * 0.35f;
+            active_branches[b].x1 = (lv_coord_t)roundf(disp_branch_x1[b]);
+            active_branches[b].y1 = (lv_coord_t)roundf(disp_branch_y1[b]);
+            active_branches[b].x2 = (lv_coord_t)roundf(disp_branch_x2[b]);
+            active_branches[b].y2 = (lv_coord_t)roundf(disp_branch_y2[b]);
+            changed = true;
+        } else {
+            active_branches[b] = target_branches[b];
+            disp_branch_x1[b]  = (float)target_branches[b].x1;
+            disp_branch_y1[b]  = (float)target_branches[b].y1;
+            disp_branch_x2[b]  = (float)target_branches[b].x2;
+            disp_branch_y2[b]  = (float)target_branches[b].y2;
+        }
+    }
 
-// Multi-Shape Route Line Points (Scaled to fit Region 1 map canvas)
-static lv_point_t right_turn_points[] = {
-    {206, 210}, {206, 170}, {225, 160}, {260, 155}, {310, 145}, {350, 120}
-};
+    if (changed) {
+        lv_obj_invalidate(scr);
+    }
+}
 
-static lv_point_t left_turn_points[] = {
-    {206, 210}, {206, 170}, {187, 160}, {150, 155}, {102, 145}, {62, 120}
-};
-
-static lv_point_t slight_right_points[] = {
-    {206, 210}, {206, 170}, {222, 130}, {248, 90}, {275, 45}
-};
-
-static lv_point_t slight_left_points[] = {
-    {206, 210}, {206, 170}, {190, 130}, {164, 90}, {137, 45}
-};
-
-static lv_point_t uturn_points[] = {
-    {206, 210}, {206, 150}, {175, 135}, {160, 105}, {175, 75}, {206, 65}
-};
-
-static lv_point_t straight_points[] = {
-    {206, 210}, {206, 170}, {206, 130}, {206, 90}, {206, 40}
-};
-
-static lv_point_t active_custom_pts[8];
-
-// Styles for Real Map High-Visibility Route Highlight
-static lv_style_t style_main_casing;
-static lv_style_t style_main_glow;
-static lv_style_t style_main_route;
-static lv_style_t style_speed_badge;
-
+// ─────────────────────────────────────────────────────────────────────────────
 void ui_init(void) {
     scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0E0F14), 0); // Dark Map Canvas Base Tone
+
+    // Pitch black background matching OLED and bezel
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    // 0. Build Map Background Canvas with Urban Grid, Secondary Roads & POIs
-    map_bg_obj = lv_obj_create(scr);
-    lv_obj_remove_style_all(map_bg_obj);
-    lv_obj_set_size(map_bg_obj, 412, 412);
-    lv_obj_align(map_bg_obj, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_clear_flag(map_bg_obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(map_bg_obj, map_background_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    // Seed default boot scene matching official BeeLine Moto II UI reference photo
+    for (uint8_t i = 0; i < 6; i++) {
+        active_route_pts[i] = BOOT_ROUTE[i];
+        target_route_pts[i] = BOOT_ROUTE[i];
+        disp_route_x[i]     = (float)BOOT_ROUTE[i].x;
+        disp_route_y[i]     = (float)BOOT_ROUTE[i].y;
+    }
+    active_route_count = 6;
+    target_route_count = 6;
 
-    // 1. Initialize Tri-Layer High-Visibility Highlighted Route Styles
-    lv_style_init(&style_main_casing);
-    lv_style_set_line_width(&style_main_casing, 24); // 24px dark asphalt outer casing #10121A
-    lv_style_set_line_color(&style_main_casing, lv_color_hex(0x10121A));
-    lv_style_set_line_rounded(&style_main_casing, true);
+    for (uint8_t b = 0; b < 2; b++) {
+        active_branches[b] = BOOT_BRANCHES[b];
+        target_branches[b] = BOOT_BRANCHES[b];
+        disp_branch_x1[b]  = (float)BOOT_BRANCHES[b].x1;
+        disp_branch_y1[b]  = (float)BOOT_BRANCHES[b].y1;
+        disp_branch_x2[b]  = (float)BOOT_BRANCHES[b].x2;
+        disp_branch_y2[b]  = (float)BOOT_BRANCHES[b].y2;
+    }
+    current_branch_count = 2;
+    target_branch_count  = 2;
 
-    lv_style_init(&style_main_glow);
-    lv_style_set_line_width(&style_main_glow, 18); // 18px vibrant cyan highlight halo #00A3FF
-    lv_style_set_line_color(&style_main_glow, lv_color_hex(0x00A3FF));
-    lv_style_set_line_rounded(&style_main_glow, true);
+    // ONE event callback on screen object — zero widget tree overhead
+    lv_obj_add_event_cb(scr, master_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 
-    lv_style_init(&style_main_route);
-    lv_style_set_line_width(&style_main_route, 12); // 12px crisp white paved core #FFFFFF
-    lv_style_set_line_color(&style_main_route, lv_color_hex(0xFFFFFF));
-    lv_style_set_line_rounded(&style_main_route, true);
+    // 50 FPS (20ms) smooth interpolation timer for fluid continuous motion
+    lv_timer_create(anim_timer_cb, 20, NULL);
 
-    // 2. Build Tri-Layer Active Highlighted Navigation Route
-    route_line_casing = lv_line_create(scr);
-    lv_line_set_points(route_line_casing, right_turn_points, 6);
-    lv_obj_add_style(route_line_casing, &style_main_casing, 0);
-
-    route_line_glow = lv_line_create(scr);
-    lv_line_set_points(route_line_glow, right_turn_points, 6);
-    lv_obj_add_style(route_line_glow, &style_main_glow, 0);
-
-    route_line_main = lv_line_create(scr);
-    lv_line_set_points(route_line_main, right_turn_points, 6);
-    lv_obj_add_style(route_line_main, &style_main_route, 0);
-
-    // 3. Build Solid White Filled Rider Pointer Arrow & Radial Aura
-    rider_pointer_obj = lv_obj_create(scr);
-    lv_obj_remove_style_all(rider_pointer_obj);
-    lv_obj_set_size(rider_pointer_obj, 412, 412);
-    lv_obj_align(rider_pointer_obj, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_clear_flag(rider_pointer_obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(rider_pointer_obj, rider_arrow_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-
-    // 4. Build Turn Vector Icon Object (Smooth 90° curve ⤷ shape)
-    turn_icon_obj = lv_obj_create(scr);
-    lv_obj_remove_style_all(turn_icon_obj);
-    lv_obj_set_size(turn_icon_obj, 412, 412);
-    lv_obj_align(turn_icon_obj, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_clear_flag(turn_icon_obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(turn_icon_obj, turn_arrow_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-
-    // 5. Two-Line Distance Display: Enlarged value & unit (First digit '3' aligned under rider pointer center)
-    distance_val_label = lv_label_create(scr);
-    lv_label_set_text(distance_val_label, "300");
-    lv_obj_set_style_text_font(distance_val_label, &lv_font_montserrat_48, 0);
-    lv_obj_set_style_text_color(distance_val_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(distance_val_label, LV_ALIGN_TOP_LEFT, 195, 248);
-
-    distance_unit_label = lv_label_create(scr);
-    lv_label_set_text(distance_unit_label, "m");
-    lv_obj_set_style_text_font(distance_unit_label, &lv_font_montserrat_32, 0);
-    lv_obj_set_style_text_color(distance_unit_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(distance_unit_label, LV_ALIGN_TOP_LEFT, 195, 304);
-
-    // 7. Build Progress Arc (Extended Bottom Rim Arc: 35° to 145°, 110° wide span)
-    progress_arc = lv_arc_create(scr);
-    lv_obj_set_size(progress_arc, 386, 386);
-    lv_obj_align(progress_arc, LV_ALIGN_CENTER, 0, 0);
-    lv_arc_set_angles(progress_arc, 35, 145);    // 90° is 6 o'clock bottom center
-    lv_arc_set_bg_angles(progress_arc, 35, 145);
-    lv_obj_remove_style(progress_arc, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(progress_arc, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(progress_arc, lv_color_hex(0x333333), LV_PART_MAIN);
-    lv_obj_set_style_arc_width(progress_arc, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(progress_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR); // Pure WHITE Fill
-    lv_arc_set_value(progress_arc, 65);
-
-    // 8. Build Speed Limit Badge (54x54px Circular Badge at X: 280, Y: 248)
-    lv_style_init(&style_speed_badge);
-    lv_style_set_radius(&style_speed_badge, LV_RADIUS_CIRCLE);
-    lv_style_set_bg_color(&style_speed_badge, lv_color_hex(0xFFFFFF));
-    lv_style_set_bg_opa(&style_speed_badge, LV_OPA_COVER);
-    lv_style_set_border_color(&style_speed_badge, lv_color_hex(0xFF3B30)); // Red Speed Ring
-    lv_style_set_border_width(&style_speed_badge, 4);
-    lv_style_set_pad_all(&style_speed_badge, 0);
-
-    speed_badge = lv_obj_create(scr);
-    lv_obj_set_size(speed_badge, 54, 54);
-    lv_obj_add_style(speed_badge, &style_speed_badge, 0);
-    lv_obj_align(speed_badge, LV_ALIGN_TOP_LEFT, 280, 248);
-    lv_obj_clear_flag(speed_badge, LV_OBJ_FLAG_SCROLLABLE);
-
-    speed_label = lv_label_create(speed_badge);
-    lv_label_set_text(speed_label, "70");
-    lv_obj_set_style_text_font(speed_label, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(speed_label, lv_color_hex(0x000000), 0);
-    lv_obj_align(speed_label, LV_ALIGN_CENTER, 0, 0);
-
-    // 9. Build Region 1 Map Street Name Banner Overlay (Subdued pill container at top)
-    street_banner_obj = lv_obj_create(scr);
-    lv_obj_set_size(street_banner_obj, 180, 26);
-    lv_obj_align(street_banner_obj, LV_ALIGN_TOP_MID, 0, 8);
-    lv_obj_set_style_bg_color(street_banner_obj, lv_color_hex(0x141620), 0);
-    lv_obj_set_style_bg_opa(street_banner_obj, LV_OPA_80, 0);
-    lv_obj_set_style_border_color(street_banner_obj, lv_color_hex(0x2A2D3D), 0);
-    lv_obj_set_style_border_width(street_banner_obj, 1, 0);
-    lv_obj_set_style_radius(street_banner_obj, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_all(street_banner_obj, 0, 0);
-    lv_obj_clear_flag(street_banner_obj, LV_OBJ_FLAG_SCROLLABLE);
-
-    street_banner_label = lv_label_create(street_banner_obj);
-    lv_label_set_text(street_banner_label, current_street_name);
-    lv_obj_set_style_text_font(street_banner_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(street_banner_label, lv_color_hex(0xE0E6ED), 0);
-    lv_obj_align(street_banner_label, LV_ALIGN_CENTER, 0, 0);
-
-    // 10. Build BLE Connection Status Label
-    ble_status_label = lv_label_create(scr);
-    lv_label_set_text(ble_status_label, LV_SYMBOL_BLUETOOTH);
-    lv_obj_set_style_text_font(ble_status_label, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(ble_status_label, lv_color_hex(0x444444), 0); // Gray when waiting
-    lv_obj_align(ble_status_label, LV_ALIGN_TOP_MID, -75, 11);
-
-    lv_obj_move_foreground(speed_badge);
     lv_obj_invalidate(scr);
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────────
 void ui_update_nav_state(const nav_state_t *nav) {
     if (!nav || !scr) return;
 
-    current_turn_type = nav->turn_type;
-    current_poi = nav->poi;
+    // Update all state variables from incoming BLE packet
+    current_turn_type     = nav->turn_type;
+    current_poi           = nav->poi;
+    current_distance_m    = nav->distance_m;
+    current_is_metric     = nav->is_metric;
+    current_speed_kph     = nav->speed_limit_kph;
+    current_progress      = nav->trip_progress_pct > 100 ? 100 : nav->trip_progress_pct;
+    current_ble_connected = nav->ble_connected;
 
-    if (nav->street_name[0] != '\0') {
+    if (nav->street_name[0] != '\0')
         snprintf(current_street_name, sizeof(current_street_name), "%s", nav->street_name);
-        if (street_banner_label) {
-            lv_label_set_text(street_banner_label, current_street_name);
+
+    // Update side street branches
+    if (nav->branch_count != current_branch_count) {
+        for (uint8_t b = 0; b < nav->branch_count && b < 3; b++) {
+            target_branches[b] = nav->branches[b];
+            active_branches[b] = nav->branches[b];
+            disp_branch_x1[b]  = (float)nav->branches[b].x1;
+            disp_branch_y1[b]  = (float)nav->branches[b].y1;
+            disp_branch_x2[b]  = (float)nav->branches[b].x2;
+            disp_branch_y2[b]  = (float)nav->branches[b].y2;
         }
-    }
-
-    // 1. Dynamic Side Street Y-Scrolling
-    dynamic_side_road_y = 164 + nav->side_road_y_offset;
-    if (map_bg_obj) lv_obj_invalidate(map_bg_obj);
-
-    // 2. Dynamic Main Active Route Polyline Morphing (Tri-Layer Highlighted Route)
-    if (route_line_main && route_line_glow && route_line_casing) {
-        if (nav->custom_path_count >= 2 && nav->custom_path_count <= 8) {
-            for (uint8_t i = 0; i < nav->custom_path_count; i++) {
-                active_custom_pts[i].x = (int16_t)nav->custom_path[i].x;
-                active_custom_pts[i].y = (int16_t)nav->custom_path[i].y;
-            }
-            lv_line_set_points(route_line_casing, active_custom_pts, nav->custom_path_count);
-            lv_line_set_points(route_line_glow, active_custom_pts, nav->custom_path_count);
-            lv_line_set_points(route_line_main, active_custom_pts, nav->custom_path_count);
-        } else if (nav->turn_type == NAV_TURN_LEFT) {
-            lv_line_set_points(route_line_casing, left_turn_points, 6);
-            lv_line_set_points(route_line_glow, left_turn_points, 6);
-            lv_line_set_points(route_line_main, left_turn_points, 6);
-        } else if (nav->turn_type == NAV_TURN_RIGHT) {
-            lv_line_set_points(route_line_casing, right_turn_points, 6);
-            lv_line_set_points(route_line_glow, right_turn_points, 6);
-            lv_line_set_points(route_line_main, right_turn_points, 6);
-        } else if (nav->turn_type == NAV_TURN_SLIGHT_RIGHT) {
-            lv_line_set_points(route_line_casing, slight_right_points, 5);
-            lv_line_set_points(route_line_glow, slight_right_points, 5);
-            lv_line_set_points(route_line_main, slight_right_points, 5);
-        } else if (nav->turn_type == NAV_TURN_SLIGHT_LEFT) {
-            lv_line_set_points(route_line_casing, slight_left_points, 5);
-            lv_line_set_points(route_line_glow, slight_left_points, 5);
-            lv_line_set_points(route_line_main, slight_left_points, 5);
-        } else if (nav->turn_type == NAV_TURN_UTURN) {
-            lv_line_set_points(route_line_casing, uturn_points, 6);
-            lv_line_set_points(route_line_glow, uturn_points, 6);
-            lv_line_set_points(route_line_main, uturn_points, 6);
-        } else {
-            lv_line_set_points(route_line_casing, straight_points, 5);
-            lv_line_set_points(route_line_glow, straight_points, 5);
-            lv_line_set_points(route_line_main, straight_points, 5);
-        }
-    }
-
-    // 3. Update Two-Line Distance Display (Value on top, Unit on bottom)
-    char val_buf[16];
-    char unit_buf[16];
-
-    if (nav->is_metric) {
-        if (nav->distance_m >= 1000) {
-            snprintf(val_buf, sizeof(val_buf), "%.1f", nav->distance_m / 1000.0f);
-            snprintf(unit_buf, sizeof(unit_buf), "km");
-        } else {
-            snprintf(val_buf, sizeof(val_buf), "%u", nav->distance_m);
-            snprintf(unit_buf, sizeof(unit_buf), "m");
-        }
+        current_branch_count = nav->branch_count;
+        target_branch_count  = nav->branch_count;
     } else {
-        uint32_t feet = (uint32_t)(nav->distance_m * 3.28084f);
-        if (feet >= 5280) {
-            snprintf(val_buf, sizeof(val_buf), "%.1f", feet / 5280.0f);
-            snprintf(unit_buf, sizeof(unit_buf), "mi");
-        } else {
-            snprintf(val_buf, sizeof(val_buf), "%lu", (unsigned long)feet);
-            snprintf(unit_buf, sizeof(unit_buf), "ft");
+        for (uint8_t b = 0; b < nav->branch_count && b < 3; b++) {
+            target_branches[b] = nav->branches[b];
         }
     }
-    lv_label_set_text(distance_val_label, val_buf);
-    lv_label_set_text(distance_unit_label, unit_buf);
 
-    // 4. Overall Journey Completion Progress Arc (0% to 100% of entire trip)
-    if (progress_arc) {
-        uint8_t trip_pct = nav->trip_progress_pct;
-        if (trip_pct > 100) trip_pct = 100;
-        lv_arc_set_value(progress_arc, trip_pct);
-    }
-
-    // 5. Update Speed Limit Badge
-    if (nav->speed_limit_kph > 0) {
-        lv_obj_clear_flag(speed_badge, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(speed_badge);
-        char speed_buf[16];
-        snprintf(speed_buf, sizeof(speed_buf), "%u", nav->speed_limit_kph);
-        lv_label_set_text(speed_label, speed_buf);
+    // Update route polyline
+    const lv_point_t *new_pts = NULL;
+    uint8_t n_pts = 0;
+    if (nav->custom_path_count >= 2 && nav->custom_path_count <= 8) {
+        new_pts = (const lv_point_t *)nav->custom_path;
+        n_pts   = nav->custom_path_count;
     } else {
-        lv_obj_add_flag(speed_badge, LV_OBJ_FLAG_HIDDEN);
+        switch (nav->turn_type) {
+            case NAV_TURN_LEFT:         new_pts = LEFT_PTS;   n_pts = 6; break;
+            case NAV_TURN_RIGHT:        new_pts = RIGHT_PTS;  n_pts = 6; break;
+            case NAV_TURN_SLIGHT_LEFT:  new_pts = SL_LEFT;    n_pts = 5; break;
+            case NAV_TURN_SLIGHT_RIGHT: new_pts = SL_RIGHT;   n_pts = 5; break;
+            case NAV_TURN_UTURN:        new_pts = UTURN_PTS;  n_pts = 6; break;
+            default:                    new_pts = STRAIGHT;   n_pts = 5; break;
+        }
     }
 
-    // 6. Update BLE Connection Symbol Color
-    if (nav->ble_connected) {
-        lv_obj_set_style_text_color(ble_status_label, lv_color_hex(0x007AFF), 0); // BLE Blue
-    } else {
-        lv_obj_set_style_text_color(ble_status_label, lv_color_hex(0x444444), 0); // Gray
+    if (n_pts != active_route_count) {
+        for (uint8_t i = active_route_count; i < n_pts; i++) {
+            disp_route_x[i] = (active_route_count > 0) ? disp_route_x[active_route_count - 1] : (float)new_pts[i].x;
+            disp_route_y[i] = (active_route_count > 0) ? disp_route_y[active_route_count - 1] : (float)new_pts[i].y;
+            active_route_pts[i].x = (lv_coord_t)disp_route_x[i];
+            active_route_pts[i].y = (lv_coord_t)disp_route_y[i];
+        }
+        active_route_count = n_pts;
+        target_route_count = n_pts;
     }
+    // Always glide towards targets at 50 FPS — zero cut-scenes
+    for (uint8_t i = 0; i < n_pts; i++) {
+        target_route_pts[i] = new_pts[i];
+    }
+
+    // Trigger immediate redraw
+    lv_obj_invalidate(scr);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 void ui_set_ble_connected(bool connected) {
-    if (!ble_status_label) return;
-    if (connected) {
-        lv_obj_set_style_text_color(ble_status_label, lv_color_hex(0x007AFF), 0);
-    } else {
-        lv_obj_set_style_text_color(ble_status_label, lv_color_hex(0x444444), 0);
-    }
+    current_ble_connected = connected;
     lv_obj_invalidate(scr);
 }

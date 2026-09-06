@@ -13,7 +13,12 @@ node_modules/
 .expo/
 dist/
 
-# IDE
+# IDE & OS
 .vscode/
 .idea/
 *.swp
+~$*
+
+# Android build outputs
+android/app/build/
+*.apk

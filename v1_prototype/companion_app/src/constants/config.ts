@@ -15,6 +15,7 @@ export const REVERSE_GEOCODE_URL = `${OLA_BASE_URL}/places/v1/reverse-geocode`;
 export const BLE_SERVICE_UUID = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d';
 export const BLE_NAV_STATE_CHAR_UUID = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6e';
 export const BLE_DEVICE_EVENT_CHAR_UUID = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6f';
+export const BLE_MAP_IMG_CHAR_UUID = '1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c70'; // Map JPEG chunk transfer
 
 // ── App Design Tokens ─────────────────────────────────────────────────────────
 export const COLORS = {

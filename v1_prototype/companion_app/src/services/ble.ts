@@ -1,5 +1,5 @@
 import { BleManager, Device, State, Characteristic } from 'react-native-ble-plx';
-import { Platform, PermissionsAndroid } from 'react-native';
+import { Platform, PermissionsAndroid, Linking } from 'react-native';
 import {
   BLE_SERVICE_UUID,
   BLE_NAV_STATE_CHAR_UUID,
@@ -12,7 +12,7 @@ const manager = new BleManager();
 
 let connectedDevice: Device | null = null;
 
-// ── Permissions ───────────────────────────────────────────────────────────────
+// ── Permissions & Bluetooth Power ───────────────────────────────────────────
 
 export async function requestBLEPermissions(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
@@ -22,6 +22,39 @@ export async function requestBLEPermissions(): Promise<boolean> {
     PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
   ]);
   return Object.values(grants).every(g => g === PermissionsAndroid.RESULTS.GRANTED);
+}
+
+export async function enableBluetooth(): Promise<boolean> {
+  try {
+    if (Platform.OS === 'android') {
+      await manager.enable();
+      return true;
+    }
+    return true;
+  } catch (e) {
+    try {
+      if (Platform.OS === 'android') {
+        await Linking.sendIntent('android.settings.BLUETOOTH_SETTINGS');
+      }
+    } catch {}
+    return false;
+  }
+}
+
+export async function disableBluetooth(): Promise<boolean> {
+  try {
+    if (Platform.OS === 'android') {
+      await manager.disable();
+      return true;
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function getBluetoothState(): Promise<State> {
+  return await manager.state();
 }
 
 // ── Scan ──────────────────────────────────────────────────────────────────────
@@ -35,12 +68,17 @@ export function scanForDevices(
   onDeviceFound: (device: Device) => void,
   onError: (err: Error) => void,
 ): () => void {
+  const seenIds = new Set<string>();
   manager.startDeviceScan(
-    null, // null = scan for ALL devices (useful for debugging/proving it works)
+    null,
     { allowDuplicates: false },
     (err, device) => {
       if (err) { onError(err); return; }
-      if (device && device.name) onDeviceFound(device);
+      if (device && device.name && !seenIds.has(device.id)) {
+        seenIds.add(device.id);
+        // Prioritize BeeLine devices or accept named devices
+        onDeviceFound(device);
+      }
     },
   );
   return () => manager.stopDeviceScan();
@@ -54,24 +92,40 @@ export async function connectToDevice(
   onDeviceEvent: (event: DeviceEvent) => void,
 ): Promise<void> {
   manager.stopDeviceScan();
-  connectedDevice = await device.connect();
-  connectedDevice = await connectedDevice.discoverAllServicesAndCharacteristics();
+  
+  try {
+    connectedDevice = await device.connect({ timeout: 10000 });
+    connectedDevice = await connectedDevice.discoverAllServicesAndCharacteristics();
 
-  // Listen for disconnection
-  connectedDevice.onDisconnected(() => {
+    // Negotiate higher MTU on Android so 60-128 byte vector map packets transmit in a single write
+    if (Platform.OS === 'android') {
+      try {
+        connectedDevice = await connectedDevice.requestMTU(185);
+        console.log('[BLE] Negotiated MTU 185 successfully');
+      } catch (e) {
+        console.warn('[BLE] MTU request failed, proceeding with default MTU:', e);
+      }
+    }
+
+    // Listen for disconnection
+    connectedDevice.onDisconnected(() => {
+      connectedDevice = null;
+      onDisconnect();
+    });
+
+    // Subscribe to device_event notifications (button presses from device)
+    connectedDevice.monitorCharacteristicForService(
+      BLE_SERVICE_UUID,
+      BLE_DEVICE_EVENT_CHAR_UUID,
+      (err, char) => {
+        if (err || !char?.value) return;
+        try { onDeviceEvent(decodeDeviceEvent(char.value)); } catch {}
+      },
+    );
+  } catch (err) {
     connectedDevice = null;
-    onDisconnect();
-  });
-
-  // Subscribe to device_event notifications (button presses from device)
-  connectedDevice.monitorCharacteristicForService(
-    BLE_SERVICE_UUID,
-    BLE_DEVICE_EVENT_CHAR_UUID,
-    (err, char) => {
-      if (err || !char?.value) return;
-      try { onDeviceEvent(decodeDeviceEvent(char.value)); } catch {}
-    },
-  );
+    throw err;
+  }
 }
 
 // ── Write nav_state ───────────────────────────────────────────────────────────
@@ -85,6 +139,7 @@ export async function writeNavState(state: NavState): Promise<void> {
     encoded,
   );
 }
+
 
 // ── Disconnect ────────────────────────────────────────────────────────────────
 

@@ -36,6 +36,13 @@ typedef struct {
     int16_t y;
 } route_point_t;
 
+typedef struct {
+    int16_t x1;
+    int16_t y1;
+    int16_t x2;
+    int16_t y2;
+} route_branch_t;
+
 // Navigation State Data
 typedef struct {
     nav_turn_type_t turn_type;   // Manoeuvre type
@@ -49,6 +56,8 @@ typedef struct {
     char street_name[32];        // Street name for Region 1 map banner overlay
     uint8_t custom_path_count;   // 0 = auto-generate from turn_type, >0 = use real map scaled path
     route_point_t custom_path[8];// Real-world scaled 2D polyline points
+    uint8_t branch_count;        // Number of real-world intersecting side road branches (0..3)
+    route_branch_t branches[3];  // Real-world side road vectors
     bool is_metric;              // true = m/km, false = ft/mi
     bool ble_connected;          // BLE connection status
 } nav_state_t;

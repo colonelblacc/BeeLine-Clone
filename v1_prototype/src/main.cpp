@@ -9,15 +9,28 @@
 
 static nav_state_t nav_data = {
     .turn_type = NAV_TURN_RIGHT,
-    .distance_m = 450,
+    .distance_m = 300,
     .speed_limit_kph = 70,
     .eta_min = 12,
-    .trip_progress_pct = 15, // Overall journey progress starting at 15%
+    .trip_progress_pct = 35,
     .side_road_y_offset = 0,
-    .street_name = "GRAND AVENUE",
-    .custom_path_count = 0,
+    .street_name = "",
+    .custom_path_count = 6,
+    .custom_path = {
+        {206, 222},
+        {206, 172},
+        {228, 158},
+        {232, 115},
+        {215, 80},
+        {195, 40}
+    },
+    .branch_count = 2,
+    .branches = {
+        {206, 172, 115, 166},
+        {232, 115, 315, 120}
+    },
     .is_metric = true,
-    .ble_connected = true
+    .ble_connected = false
 };
 
 #include <NimBLEDevice.h>
@@ -61,19 +74,61 @@ class NavStateCallbacks : public NimBLECharacteristicCallbacks {
             if (value.length() >= 11) nav_data.poi.x_rel_m = (int8_t)buf[10];
             if (value.length() >= 12) nav_data.poi.y_rel_m = (int8_t)buf[11];
 
-            // Optional street_name string payload (bytes 12+)
-            if (value.length() >= 13) {
-                size_t str_len = value.length() - 12;
+            // Parse custom real-world map polyline path points & branches if flag bit 1 is set
+            nav_data.custom_path_count = 0;
+            nav_data.branch_count = 0;
+            size_t offset = 12;
+
+            if ((buf[6] & 0x02) != 0 && value.length() > offset) {
+                uint8_t count = buf[offset++];
+                if (count > 8) count = 8;
+                nav_data.custom_path_count = count;
+                for (uint8_t i = 0; i < count && offset + 4 <= value.length(); i++) {
+                    int16_t px = (int16_t)(buf[offset] | (buf[offset + 1] << 8));
+                    int16_t py = (int16_t)(buf[offset + 2] | (buf[offset + 3] << 8));
+                    nav_data.custom_path[i].x = px;
+                    nav_data.custom_path[i].y = py;
+                    offset += 4;
+                }
+
+                if (value.length() > offset) {
+                    uint8_t b_count = buf[offset++];
+                    if (b_count > 3) b_count = 3;
+                    nav_data.branch_count = b_count;
+                    for (uint8_t i = 0; i < b_count && offset + 8 <= value.length(); i++) {
+                        nav_data.branches[i].x1 = (int16_t)(buf[offset]     | (buf[offset + 1] << 8));
+                        nav_data.branches[i].y1 = (int16_t)(buf[offset + 2] | (buf[offset + 3] << 8));
+                        nav_data.branches[i].x2 = (int16_t)(buf[offset + 4] | (buf[offset + 5] << 8));
+                        nav_data.branches[i].y2 = (int16_t)(buf[offset + 6] | (buf[offset + 7] << 8));
+                        offset += 8;
+                    }
+                }
+            }
+
+            // Trailing payload = street_name UTF-8 string
+            if (value.length() > offset) {
+                size_t str_len = value.length() - offset;
                 if (str_len > 31) str_len = 31;
-                memcpy(nav_data.street_name, buf + 12, str_len);
+                memcpy(nav_data.street_name, buf + offset, str_len);
                 nav_data.street_name[str_len] = '\0';
             }
 
             nav_data.ble_connected = true;
             is_auto_sim = false;
             ui_update_nav_state(&nav_data);
-            Serial.printf("[BLE RX] Turn=%d Dist=%um Speed=%u ETA=%um Progress=%d%% Street=%s\n",
-                          nav_data.turn_type, nav_data.distance_m, nav_data.speed_limit_kph, nav_data.eta_min, nav_data.trip_progress_pct, nav_data.street_name);
+
+            // Detailed diagnostic: shows exactly what the phone sent
+            Serial.printf("[BLE RX] Turn=%d Dist=%um Speed=%u Pts=%d Branches=%d Street=%s\n",
+                          nav_data.turn_type, nav_data.distance_m, nav_data.speed_limit_kph,
+                          nav_data.custom_path_count, nav_data.branch_count, nav_data.street_name);
+            for (uint8_t i = 0; i < nav_data.custom_path_count; i++) {
+                Serial.printf("  PATH[%d] x=%d y=%d\n", i, nav_data.custom_path[i].x, nav_data.custom_path[i].y);
+            }
+            for (uint8_t b = 0; b < nav_data.branch_count; b++) {
+                Serial.printf("  BRANCH[%d] (%d,%d)->(%d,%d)\n", b,
+                    nav_data.branches[b].x1, nav_data.branches[b].y1,
+                    nav_data.branches[b].x2, nav_data.branches[b].y2);
+            }
         }
     }
 };
@@ -239,30 +294,68 @@ void loop() {
                     nav_data.turn_type = NAV_TURN_RIGHT;
                     nav_data.speed_limit_kph = 70;
                     snprintf(nav_data.street_name, sizeof(nav_data.street_name), "GRAND AVENUE");
+                    nav_data.custom_path_count = 6;
+                    nav_data.custom_path[0] = {206, 222};
+                    nav_data.custom_path[1] = {206, 172};
+                    nav_data.custom_path[2] = {228, 158};
+                    nav_data.custom_path[3] = {232, 115};
+                    nav_data.custom_path[4] = {215, 80};
+                    nav_data.custom_path[5] = {195, 40};
+                    nav_data.branch_count = 2;
+                    nav_data.branches[0] = {206, 172, 115, 166};
+                    nav_data.branches[1] = {232, 115, 315, 120};
                     trip_progress_f = 15.0f;
                     break;
                 case 1:
                     nav_data.turn_type = NAV_TURN_STRAIGHT;
                     nav_data.speed_limit_kph = 50;
                     snprintf(nav_data.street_name, sizeof(nav_data.street_name), "NORTH 4TH ST");
+                    nav_data.custom_path_count = 5;
+                    nav_data.custom_path[0] = {206, 222};
+                    nav_data.custom_path[1] = {206, 170};
+                    nav_data.custom_path[2] = {206, 130};
+                    nav_data.custom_path[3] = {206, 90};
+                    nav_data.custom_path[4] = {206, 40};
+                    nav_data.branch_count = 2;
+                    nav_data.branches[0] = {206, 130, 115, 130};
+                    nav_data.branches[1] = {206, 130, 295, 130};
                     trip_progress_f = 35.0f;
                     break;
                 case 2:
                     nav_data.turn_type = NAV_TURN_LEFT;
                     nav_data.speed_limit_kph = 100;
                     snprintf(nav_data.street_name, sizeof(nav_data.street_name), "ELM BOULEVARD");
+                    nav_data.custom_path_count = 6;
+                    nav_data.custom_path[0] = {206, 222};
+                    nav_data.custom_path[1] = {206, 175};
+                    nav_data.custom_path[2] = {187, 160};
+                    nav_data.custom_path[3] = {150, 155};
+                    nav_data.custom_path[4] = {102, 145};
+                    nav_data.custom_path[5] = {62, 120};
+                    nav_data.branch_count = 1;
+                    nav_data.branches[0] = {206, 175, 206, 110};
                     trip_progress_f = 55.0f;
                     break;
                 case 3:
                     nav_data.turn_type = NAV_TURN_SLIGHT_RIGHT;
                     nav_data.speed_limit_kph = 30;
                     snprintf(nav_data.street_name, sizeof(nav_data.street_name), "PARKWAY DRIVE");
+                    nav_data.custom_path_count = 5;
+                    nav_data.custom_path[0] = {206, 222};
+                    nav_data.custom_path[1] = {206, 170};
+                    nav_data.custom_path[2] = {222, 130};
+                    nav_data.custom_path[3] = {248, 90};
+                    nav_data.custom_path[4] = {275, 45};
+                    nav_data.branch_count = 1;
+                    nav_data.branches[0] = {206, 170, 125, 170};
                     trip_progress_f = 75.0f;
                     break;
                 case 4:
                     nav_data.turn_type = NAV_TURN_ARRIVED;
                     nav_data.speed_limit_kph = 0;
                     snprintf(nav_data.street_name, sizeof(nav_data.street_name), "DESTINATION");
+                    nav_data.custom_path_count = 0;
+                    nav_data.branch_count = 0;
                     trip_progress_f = 100.0f;
                     break;
             }

@@ -15,7 +15,8 @@ import {
   getRemainingPolyline,
   projectRoadNetworkToRegion1,
   startRouteSimulation, 
-  SimulationController 
+  SimulationController,
+  distanceBetween
 } from '../services/gps';
 import { getDirections } from '../services/olamaps';
 import { writeNavState } from '../services/ble';
@@ -156,11 +157,17 @@ export function NavigationScreen() {
           if (shouldWrite) lastWriteTime = now;
           if (shouldLog)   lastVerifyLogTime = now;
 
-          const totalDist = activeRoute.totalDistanceM || 1;
-          const remainingSteps = activeRoute.steps.slice(stepIndex);
-          const remainingDistM = remainingSteps.reduce((s, step) => s + step.distanceM, 0);
-          const progressPct = Math.min(100, Math.max(0, Math.round(((totalDist - remainingDistM) / totalDist) * 100)));
-          const traveledDistM = Math.max(0, totalDist - remainingDistM);
+          const arrived = isArrivedRef.current;
+          const aheadPolyline = getRemainingPolyline(loc, activeRoute.polyline);
+
+          // Calculate continuous remaining distance directly from ahead polyline geometry
+          let realRemainingDistM = 0;
+          for (let i = 1; i < aheadPolyline.length; i++) {
+            realRemainingDistM += distanceBetween(aheadPolyline[i - 1], aheadPolyline[i]);
+          }
+          const totalDist = activeRoute.totalDistanceM || Math.max(1, realRemainingDistM);
+          const continuousTraveledM = Math.max(0, totalDist - realRemainingDistM);
+          const progressPct = Math.min(100, Math.max(0, Math.round((continuousTraveledM / totalDist) * 100)));
 
           const step = activeRoute.steps[stepIndex];
           const rawInstruction = step?.instruction || '';
@@ -168,9 +175,7 @@ export function NavigationScreen() {
             .replace(/^(Turn\s+left\s+onto|Turn\s+right\s+onto|Head\s+|Continue\s+onto|Merge\s+onto|Keep\s+left\s+onto|Keep\s+right\s+onto)\s+/i, '')
             .substring(0, 30) || 'ACTIVE ROUTE';
 
-          const arrived = isArrivedRef.current;
-          const aheadPolyline = getRemainingPolyline(loc, activeRoute.polyline);
-          const viewportData = projectRoadNetworkToRegion1(loc, aheadPolyline, activeRoute.steps, stepIndex, head, 1.3, 8, traveledDistM);
+          const viewportData = projectRoadNetworkToRegion1(loc, aheadPolyline, activeRoute.steps, stepIndex, head, 1.3, 8, continuousTraveledM);
 
           // Detailed console log for coordinate mapping verification
           if (now - lastVerifyLogTime >= 2000) {

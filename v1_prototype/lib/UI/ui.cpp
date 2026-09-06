@@ -130,26 +130,67 @@ static void master_draw_cb(lv_event_t *e) {
             float uy = dy / len;
             float nx = -uy;
             float ny =  ux;
-            float hw = 8.5f; // Center-to-center: 17px. Leaves exact 14px hollow interior between 3px rails
+            float hw = 8.0f; // Center-to-center: 16px between the two curb lines
 
-            lv_draw_line_dsc_t sd; lv_draw_line_dsc_init(&sd);
-            sd.color = lv_color_hex(0xFFFFFF); // Crisp brilliant white rails
-            sd.width = 3;
-            sd.round_start = sd.round_end = true;
+            // Penetrate 6px into the main road body so rails emerge seamlessly with zero gap
+            float start_cx = bx1 - ux * 6.0f;
+            float start_cy = by1 - uy * 6.0f;
 
-            // Penetrate 7px into the main road body so rails emerge seamlessly with 0 gap
-            float start_x = bx1 - ux * 7.0f;
-            float start_y = by1 - uy * 7.0f;
+            // Two parallel curb rails: Rail 1 (+nx) and Rail 2 (-nx)
+            float r1_x1 = start_cx + nx * hw;
+            float r1_y1 = start_cy + ny * hw;
+            float r1_dx = (bx2 + nx * hw) - r1_x1;
+            float r1_dy = (by2 + ny * hw) - r1_y1;
 
-            // Rail 1
-            lv_point_t r1_a = {(lv_coord_t)roundf(start_x + nx * hw), (lv_coord_t)roundf(start_y + ny * hw)};
-            lv_point_t r1_b = {(lv_coord_t)roundf(bx2 + nx * hw), (lv_coord_t)roundf(by2 + ny * hw)};
-            lv_draw_line(draw_ctx, &sd, &r1_a, &r1_b);
+            float r2_x1 = start_cx - nx * hw;
+            float r2_y1 = start_cy - ny * hw;
+            float r2_dx = (bx2 - nx * hw) - r2_x1;
+            float r2_dy = (by2 - ny * hw) - r2_y1;
 
-            // Rail 2
-            lv_point_t r2_a = {(lv_coord_t)roundf(start_x - nx * hw), (lv_coord_t)roundf(start_y - ny * hw)};
-            lv_point_t r2_b = {(lv_coord_t)roundf(bx2 - nx * hw), (lv_coord_t)roundf(by2 - ny * hw)};
-            lv_draw_line(draw_ctx, &sd, &r2_a, &r2_b);
+            // Render both parallel lines with a smooth multi-stop gradient fading away from the main road
+            const uint8_t NUM_SEGS = 8;
+            for (uint8_t k = 0; k < NUM_SEGS; k++) {
+                float t0 = (float)k / (float)NUM_SEGS;
+                float t1 = (float)(k + 1) / (float)NUM_SEGS;
+
+                // Rail 1 segment
+                lv_point_t r1_a = {
+                    (lv_coord_t)roundf(r1_x1 + t0 * r1_dx),
+                    (lv_coord_t)roundf(r1_y1 + t0 * r1_dy)
+                };
+                lv_point_t r1_b = {
+                    (lv_coord_t)roundf(r1_x1 + t1 * r1_dx),
+                    (lv_coord_t)roundf(r1_y1 + t1 * r1_dy)
+                };
+
+                // Rail 2 segment
+                lv_point_t r2_a = {
+                    (lv_coord_t)roundf(r2_x1 + t0 * r2_dx),
+                    (lv_coord_t)roundf(r2_y1 + t0 * r2_dy)
+                };
+                lv_point_t r2_b = {
+                    (lv_coord_t)roundf(r2_x1 + t1 * r2_dx),
+                    (lv_coord_t)roundf(r2_y1 + t1 * r2_dy)
+                };
+
+                // Gradient ratio: 0.0 at main road -> 1.0 at outer tip
+                float ratio = (float)k / (float)(NUM_SEGS - 1);
+                float fade = 1.0f - (ratio * ratio); // Natural cubic decay
+
+                uint8_t rgb = (uint8_t)roundf(18.0f + fade * (255.0f - 18.0f));
+                lv_opa_t opa = (lv_opa_t)roundf(25.0f + fade * (255.0f - 25.0f));
+
+                lv_draw_line_dsc_t sd;
+                lv_draw_line_dsc_init(&sd);
+                sd.color = lv_color_make(rgb, rgb, rgb);
+                sd.opa = opa;
+                sd.width = 3;
+                sd.round_start = (k == 0);
+                sd.round_end = (k == NUM_SEGS - 1);
+
+                lv_draw_line(draw_ctx, &sd, &r1_a, &r1_b);
+                lv_draw_line(draw_ctx, &sd, &r2_a, &r2_b);
+            }
         }
     }
 
@@ -385,6 +426,18 @@ static void anim_timer_cb(lv_timer_t *timer) {
         float dy1 = (float)target_branches[b].y1 - disp_branch_y1[b];
         float dx2 = (float)target_branches[b].x2 - disp_branch_x2[b];
         float dy2 = (float)target_branches[b].y2 - disp_branch_y2[b];
+
+        // If branch wrapped to top of screen or jumped position, snap immediately to prevent reverse gliding
+        if (dy1 < -15.0f || fabsf(dx1) > 40.0f) {
+            disp_branch_x1[b] = (float)target_branches[b].x1;
+            disp_branch_y1[b] = (float)target_branches[b].y1;
+            disp_branch_x2[b] = (float)target_branches[b].x2;
+            disp_branch_y2[b] = (float)target_branches[b].y2;
+            active_branches[b] = target_branches[b];
+            changed = true;
+            continue;
+        }
+
         if (fabsf(dx1) > 0.2f || fabsf(dy1) > 0.2f || fabsf(dx2) > 0.2f || fabsf(dy2) > 0.2f) {
             disp_branch_x1[b] += dx1 * 0.35f;
             disp_branch_y1[b] += dy1 * 0.35f;

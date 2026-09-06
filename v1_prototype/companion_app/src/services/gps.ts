@@ -291,15 +291,16 @@ export function projectRoadNetworkToRegion1(
   const sideBranches: SideBranch[] = [];
   let turnAngleDeg = 0;
 
-  // Check if approaching a turn maneuver step within 220m
+  // Check if approaching an actual turn maneuver step within 180m
   let hasTurnJunction = false;
   if (steps && steps.length > 0) {
-    for (let i = currentStepIdx; i < steps.length && sideBranches.length < 3; i++) {
+    for (let i = currentStepIdx; i < steps.length && sideBranches.length < 2; i++) {
       const step = steps[i];
-      const junc = toScreen(step.location);
+      if (step.turnType === 0) continue; // Skip straight/continue steps
 
-      if (junc.distM < 10 || junc.distM > 220) continue;
-      if (junc.y < 15 || junc.y > 205) continue;
+      const junc = toScreen(step.location);
+      if (junc.distM < 10 || junc.distM > 180) continue;
+      if (junc.y < 20 || junc.y > 205) continue;
 
       const prevStepLoc = i > 0 ? steps[i - 1].location : userLocation;
       const incomingBearing = bearingBetween(prevStepLoc, step.location);
@@ -311,36 +312,36 @@ export function projectRoadNetworkToRegion1(
       while (relAngle < -180) relAngle += 360;
       if (i === currentStepIdx) turnAngleDeg = Math.round(relAngle);
 
-      const branchLenPx = 65;
-
-      // Crossing through road
-      if (Math.abs(relAngle) > 20 && sideBranches.length < 3) {
+      if (Math.abs(relAngle) >= 15) {
+        const branchLenPx = 92;
+        // 1. Through road continuing straight ahead past the turn
         const crossFwd = bearingToScreen(junc, incomingBearing, branchLenPx);
         sideBranches.push({ x1: junc.x, y1: junc.y, x2: crossFwd.x, y2: crossFwd.y });
-        hasTurnJunction = true;
-      }
 
-      // Opposite side street arm
-      if (sideBranches.length < 3) {
+        // 2. Opposite arm (T/crossroads)
         const oppBearing = (incomingBearing - relAngle + 360) % 360;
-        const oppArm = bearingToScreen(junc, oppBearing, Math.round(branchLenPx * 0.8));
+        const oppArm = bearingToScreen(junc, oppBearing, Math.round(branchLenPx * 0.85));
         sideBranches.push({ x1: junc.x, y1: junc.y, x2: oppArm.x, y2: oppArm.y });
+
         hasTurnJunction = true;
+        break; // Active turn junction locks priority
       }
     }
   }
 
-  // If cruising (no active turn junction in viewport), generate passing side streets
-  // that smoothly slide down Region 1 at 50 FPS as the rider simulates/travels!
+  // If cruising (or turn junction is > 180m away), generate passing side streets
+  // that continuously slide down Region 1 at 50 FPS as the rider travels/simulates!
   if (!hasTurnJunction) {
-    const streetSpacingM = 120; // Side street every 120 meters
-    const cycleDist = Math.abs(traveledDistM) % streetSpacingM;
-    const distAhead1 = streetSpacingM - cycleDist;
-    const distAhead2 = distAhead1 + streetSpacingM;
+    const SPACING_M = 85; // A side street every 85 meters
+    const cycleDist = Math.abs(traveledDistM) % SPACING_M;
+    const offset = SPACING_M - cycleDist; // Distance to nearest upcoming side street (85m -> 0m)
 
-    const candidates = [distAhead1, distAhead2];
+    // Check upcoming side streets across horizons
+    const candidates = [offset, offset + SPACING_M, offset + 2 * SPACING_M];
+    const branchSlots: (SideBranch | null)[] = [null, null];
+
     for (const dAhead of candidates) {
-      if (dAhead >= 15 && dAhead <= 220 && sideBranches.length < 2) {
+      if (dAhead >= 6 && dAhead <= 220) {
         const frac = Math.min(1, Math.max(0, dAhead / HORIZON_M));
         const idx = Math.min(mainRoute.length - 2, Math.floor(frac * (mainRoute.length - 1)));
         const remT = (frac * (mainRoute.length - 1)) - idx;
@@ -349,17 +350,39 @@ export function projectRoadNetworkToRegion1(
         const jx = Math.round(pA.x + (pB.x - pA.x) * remT);
         const jy = Math.round(pA.y + (pB.y - pA.y) * remT);
 
-        if (jy >= 18 && jy <= 205) {
-          const blockIdx = Math.floor((traveledDistM + dAhead) / streetSpacingM);
-          const isRight = (blockIdx % 2 === 0);
-          const armLen = 58;
-          const endX = isRight ? Math.min(404, jx + armLen) : Math.max(8, jx - armLen);
-          const endY = jy - 3;
+        if (jy >= 18 && jy <= 208) {
+          // Compute road tangent and perpendicular normal vector
+          const vx = (pB.x - pA.x);
+          const vy = (pB.y - pA.y);
+          const vlen = Math.sqrt(vx * vx + vy * vy) || 1;
+          const ux = vx / vlen;
+          const uy = vy / vlen;
 
-          sideBranches.push({ x1: jx, y1: jy, x2: endX, y2: endY });
+          // Perpendicular normal to the road
+          const nxRight = -uy;
+          const nyRight =  ux;
+
+          // Parity slot assignment: even blocks stay permanently in slot 0, odd in slot 1
+          const block = Math.round((traveledDistM + dAhead) / SPACING_M);
+          const slot = Math.abs(block) % 2;
+
+          if (!branchSlots[slot]) {
+            const isRight = (block % 2 === 0);
+            const dirX = isRight ? nxRight : -nxRight;
+            const dirY = isRight ? nyRight : -nyRight;
+
+            const armLen = 92;
+            const x2 = Math.round(Math.max(10, Math.min(402, jx + dirX * armLen)));
+            const y2 = Math.round(Math.max(10, Math.min(208, jy + dirY * armLen)));
+
+            branchSlots[slot] = { x1: jx, y1: jy, x2, y2 };
+          }
         }
       }
     }
+
+    if (branchSlots[0]) sideBranches.push(branchSlots[0]);
+    if (branchSlots[1]) sideBranches.push(branchSlots[1]);
   }
 
   return { mainRoute, sideBranches, turnAngleDeg };

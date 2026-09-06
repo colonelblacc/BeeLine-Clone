@@ -265,6 +265,120 @@ void process_serial_command(String cmd) {
     ui_update_nav_state(&nav_data);
 }
 
+static void update_sim_branches(float current_dist_f, uint8_t step) {
+    if (step == 4) { // Destination arrived
+        nav_data.branch_count = 0;
+        return;
+    }
+
+    const lv_point_t *pts = (const lv_point_t *)nav_data.custom_path;
+    uint8_t n_pts = nav_data.custom_path_count;
+    if (n_pts < 2) {
+        nav_data.branch_count = 0;
+        return;
+    }
+
+    // Measure total length of custom_path from rider (pts[0]) to horizon (pts[n_pts - 1])
+    float seg_lens[8];
+    float total_len = 0.0f;
+    for (uint8_t i = 0; i < n_pts - 1; i++) {
+        float dx = (float)(pts[i + 1].x - pts[i].x);
+        float dy = (float)(pts[i + 1].y - pts[i].y);
+        seg_lens[i] = sqrtf(dx * dx + dy * dy);
+        total_len += seg_lens[i];
+    }
+    if (total_len < 10.0f) return;
+
+    // A side street every 85 meters
+    const float SPACING_M = 85.0f;
+    float traveled_m = 450.0f - current_dist_f;
+    float cycle = fmodf(traveled_m, SPACING_M);
+
+    float d0 = SPACING_M - cycle;          // 0..85m ahead
+    float d1 = d0 + SPACING_M;             // 85..170m ahead
+    float d2 = d1 + SPACING_M;             // 170..255m ahead
+    float cands[3] = {d0, d1, d2};
+
+    // Parity slots: slot 0 for even streets, slot 1 for odd streets
+    bool slot_filled[2] = {false, false};
+
+    for (uint8_t c = 0; c < 3; c++) {
+        float dist_ahead = cands[c];
+        if (dist_ahead < 6.0f || dist_ahead > 190.0f) continue;
+
+        // Map dist_ahead (0..190m) to pixel arc length along road curve (0..total_len)
+        float target_arc = (dist_ahead / 190.0f) * total_len;
+        if (target_arc < 5.0f || target_arc > total_len) continue;
+
+        // Determine road segment
+        float acc = 0.0f;
+        uint8_t seg = 0;
+        float t = 0.0f;
+        for (uint8_t i = 0; i < n_pts - 1; i++) {
+            if (target_arc <= acc + seg_lens[i] || i == n_pts - 2) {
+                seg = i;
+                float slen = seg_lens[i];
+                t = (slen > 0.1f) ? (target_arc - acc) / slen : 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                break;
+            }
+            acc += seg_lens[i];
+        }
+
+        float p1x = (float)pts[seg].x;
+        float p1y = (float)pts[seg].y;
+        float p2x = (float)pts[seg + 1].x;
+        float p2y = (float)pts[seg + 1].y;
+
+        float jx = p1x + t * (p2x - p1x);
+        float jy = p1y + t * (p2y - p1y);
+
+        float vx = p2x - p1x;
+        float vy = p2y - p1y;
+        float vlen = sqrtf(vx * vx + vy * vy);
+        if (vlen < 0.1f) continue;
+        float ux = vx / vlen;
+        float uy = vy / vlen;
+
+        // Road perpendicular normal
+        float nx = -uy;
+        float ny =  ux;
+
+        int block_num = (int)floorf((traveled_m + dist_ahead) / SPACING_M);
+        uint8_t slot = (uint8_t)(abs(block_num) % 2);
+
+        if (!slot_filled[slot]) {
+            bool is_right = (block_num % 2 == 0);
+            float dir_x = is_right ? nx : -nx;
+            float dir_y = is_right ? ny : -ny;
+
+            float arm_len = 92.0f;
+            int16_t x2 = (int16_t)roundf(jx + dir_x * arm_len);
+            int16_t y2 = (int16_t)roundf(jy + dir_y * arm_len);
+
+            if (x2 < 10) x2 = 10;
+            if (x2 > 402) x2 = 402;
+            if (y2 < 10) y2 = 10;
+            if (y2 > 215) y2 = 215;
+
+            nav_data.branches[slot].x1 = (int16_t)roundf(jx);
+            nav_data.branches[slot].y1 = (int16_t)roundf(jy);
+            nav_data.branches[slot].x2 = x2;
+            nav_data.branches[slot].y2 = y2;
+            slot_filled[slot] = true;
+        }
+    }
+
+    if (slot_filled[0] && slot_filled[1]) {
+        nav_data.branch_count = 2;
+    } else if (slot_filled[0] || slot_filled[1]) {
+        nav_data.branch_count = 1;
+        if (!slot_filled[0] && slot_filled[1]) {
+            nav_data.branches[0] = nav_data.branches[1];
+        }
+    }
+}
+
 void loop() {
     Lvgl_Loop();
 
@@ -394,8 +508,8 @@ void loop() {
                 break;
         }
 
-        // Smooth sub-pixel side street Y-scrolling
-        nav_data.side_road_y_offset = (int16_t)(((450.0f - current_dist_f) * 45.0f) / 450.0f);
+        // Continuous smooth 50 FPS side street scrolling along active road
+        update_sim_branches(current_dist_f, turn_step);
 
         // Send smooth telemetry update to UI pipeline
         ui_update_nav_state(&nav_data);

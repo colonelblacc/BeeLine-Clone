@@ -343,14 +343,28 @@ static void master_draw_cb(lv_event_t *e) {
             }
         }
 
+        // Clean black background backing to guarantee zero ghosting between digit count transitions
+        lv_draw_rect_dsc_t cd; lv_draw_rect_dsc_init(&cd);
+        cd.bg_color = lv_color_hex(0x000000); cd.bg_opa = LV_OPA_COVER; cd.border_width = 0;
+        lv_area_t ca{160, 252, 282, 342};
+        lv_draw_rect(draw_ctx, &cd, &ca);
+
+        // Distance value (Montserrat 48, strictly on line 1, never wraps)
         lv_draw_label_dsc_t dv; lv_draw_label_dsc_init(&dv);
-        dv.color = lv_color_hex(0xFFFFFF); dv.font = &lv_font_montserrat_48;
-        lv_area_t va{175, 268, 265, 318};
+        dv.color = lv_color_hex(0xFFFFFF);
+        dv.font = &lv_font_montserrat_48;
+        dv.align = LV_TEXT_ALIGN_CENTER;
+        dv.flag = LV_TEXT_FLAG_NONE;
+        lv_area_t va{160, 252, 282, 304};
         lv_draw_label(draw_ctx, &dv, &va, val_buf, NULL);
 
+        // Unit label (Montserrat 24, distinctly separated below value with 4px gap)
         lv_draw_label_dsc_t du; lv_draw_label_dsc_init(&du);
-        du.color = lv_color_hex(0xFFFFFF); du.font = &lv_font_montserrat_24;
-        lv_area_t ua{178, 314, 230, 344};
+        du.color = lv_color_hex(0xFFFFFF);
+        du.font = &lv_font_montserrat_24;
+        du.align = LV_TEXT_ALIGN_CENTER;
+        du.flag = LV_TEXT_FLAG_NONE;
+        lv_area_t ua{160, 308, 282, 338};
         lv_draw_label(draw_ctx, &du, &ua, unit_buf, NULL);
     }
 

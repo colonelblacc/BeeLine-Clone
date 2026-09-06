@@ -128,45 +128,68 @@ static void master_draw_cb(lv_event_t *e) {
         if (len > 3.0f) {
             float ux = dx / len;
             float uy = dy / len;
+            float nx = -uy;
+            float ny =  ux;
+            float hw = 8.0f; // Center-to-center: 16px between the two curb lines
 
-            // Penetrate 6px into the main road body so the line emerges seamlessly with zero gap
-            float start_x = bx1 - ux * 6.0f;
-            float start_y = by1 - uy * 6.0f;
-            float total_dx = bx2 - start_x;
-            float total_dy = by2 - start_y;
+            // Penetrate 6px into the main road body so rails emerge seamlessly with zero gap
+            float start_cx = bx1 - ux * 6.0f;
+            float start_cy = by1 - uy * 6.0f;
 
-            // Render clean single road line with a smooth multi-stop gradient fading away from the main road
+            // Two parallel curb rails: Rail 1 (+nx) and Rail 2 (-nx)
+            float r1_x1 = start_cx + nx * hw;
+            float r1_y1 = start_cy + ny * hw;
+            float r1_dx = (bx2 + nx * hw) - r1_x1;
+            float r1_dy = (by2 + ny * hw) - r1_y1;
+
+            float r2_x1 = start_cx - nx * hw;
+            float r2_y1 = start_cy - ny * hw;
+            float r2_dx = (bx2 - nx * hw) - r2_x1;
+            float r2_dy = (by2 - ny * hw) - r2_y1;
+
+            // Render both parallel lines with a smooth multi-stop gradient fading away from the main road
             const uint8_t NUM_SEGS = 8;
             for (uint8_t k = 0; k < NUM_SEGS; k++) {
                 float t0 = (float)k / (float)NUM_SEGS;
                 float t1 = (float)(k + 1) / (float)NUM_SEGS;
 
-                lv_point_t p_a = {
-                    (lv_coord_t)roundf(start_x + t0 * total_dx),
-                    (lv_coord_t)roundf(start_y + t0 * total_dy)
+                // Rail 1 segment
+                lv_point_t r1_a = {
+                    (lv_coord_t)roundf(r1_x1 + t0 * r1_dx),
+                    (lv_coord_t)roundf(r1_y1 + t0 * r1_dy)
                 };
-                lv_point_t p_b = {
-                    (lv_coord_t)roundf(start_x + t1 * total_dx),
-                    (lv_coord_t)roundf(start_y + t1 * total_dy)
+                lv_point_t r1_b = {
+                    (lv_coord_t)roundf(r1_x1 + t1 * r1_dx),
+                    (lv_coord_t)roundf(r1_y1 + t1 * r1_dy)
+                };
+
+                // Rail 2 segment
+                lv_point_t r2_a = {
+                    (lv_coord_t)roundf(r2_x1 + t0 * r2_dx),
+                    (lv_coord_t)roundf(r2_y1 + t0 * r2_dy)
+                };
+                lv_point_t r2_b = {
+                    (lv_coord_t)roundf(r2_x1 + t1 * r2_dx),
+                    (lv_coord_t)roundf(r2_y1 + t1 * r2_dy)
                 };
 
                 // Gradient ratio: 0.0 at main road -> 1.0 at outer tip
                 float ratio = (float)k / (float)(NUM_SEGS - 1);
-                float fade = 1.0f - (ratio * ratio); // Natural cubic decay: solid white at road, smoothly fading away
+                float fade = 1.0f - (ratio * ratio); // Natural cubic decay
 
-                uint8_t rgb = (uint8_t)roundf(16.0f + fade * (255.0f - 16.0f));
-                lv_opa_t opa = (lv_opa_t)roundf(20.0f + fade * (255.0f - 20.0f));
-                lv_coord_t width = (lv_coord_t)roundf(3.0f + fade * 2.0f); // 5px at road tapering to 3px
+                uint8_t rgb = (uint8_t)roundf(18.0f + fade * (255.0f - 18.0f));
+                lv_opa_t opa = (lv_opa_t)roundf(25.0f + fade * (255.0f - 25.0f));
 
                 lv_draw_line_dsc_t sd;
                 lv_draw_line_dsc_init(&sd);
                 sd.color = lv_color_make(rgb, rgb, rgb);
                 sd.opa = opa;
-                sd.width = width;
+                sd.width = 3;
                 sd.round_start = (k == 0);
                 sd.round_end = (k == NUM_SEGS - 1);
 
-                lv_draw_line(draw_ctx, &sd, &p_a, &p_b);
+                lv_draw_line(draw_ctx, &sd, &r1_a, &r1_b);
+                lv_draw_line(draw_ctx, &sd, &r2_a, &r2_b);
             }
         }
     }
